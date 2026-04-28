@@ -449,6 +449,43 @@ func (s *SQLiteStore) CreateObservation(ctx context.Context, observation domain.
 	return observation, nil
 }
 
+func (s *SQLiteStore) ListObservationsByAttempt(ctx context.Context, attemptID string) ([]domain.Observation, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, attempt_id, COALESCE(tool_call_id, ''), type, summary, evidence_ref, payload, created_at
+		FROM observations
+		WHERE attempt_id = ?
+		ORDER BY created_at, id
+	`, attemptID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var observations []domain.Observation
+	for rows.Next() {
+		var observation domain.Observation
+		var createdAt string
+		if err := rows.Scan(
+			&observation.ID,
+			&observation.AttemptID,
+			&observation.ToolCallID,
+			&observation.Type,
+			&observation.Summary,
+			&observation.EvidenceRef,
+			&observation.Payload,
+			&createdAt,
+		); err != nil {
+			return nil, err
+		}
+		observation.CreatedAt, err = parseTime(createdAt)
+		if err != nil {
+			return nil, err
+		}
+		observations = append(observations, observation)
+	}
+	return observations, rows.Err()
+}
+
 func (s *SQLiteStore) CreateTestResult(ctx context.Context, result domain.TestResult) (domain.TestResult, error) {
 	if result.ID == "" {
 		result.ID = newID()

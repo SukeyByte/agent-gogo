@@ -58,7 +58,7 @@ func TestSQLiteStoreCreatesProjectTaskAttemptAndEvents(t *testing.T) {
 
 	_, err = store.CreateToolCall(ctx, domain.ToolCall{
 		AttemptID: attempt.ID,
-		Name:      "mock.tool",
+		Name:      "sample.tool",
 		InputJSON: `{"ok":true}`,
 		Status:    domain.ToolCallStatusSucceeded,
 	})
@@ -69,7 +69,7 @@ func TestSQLiteStoreCreatesProjectTaskAttemptAndEvents(t *testing.T) {
 	_, err = store.CreateObservation(ctx, domain.Observation{
 		AttemptID: attempt.ID,
 		Type:      "tool.output",
-		Summary:   "mock tool completed",
+		Summary:   "sample tool completed",
 	})
 	if err != nil {
 		t.Fatalf("create observation: %v", err)

@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/sukeke/agent-gogo/internal/chain"
 	comm "github.com/sukeke/agent-gogo/internal/communication"
 	"github.com/sukeke/agent-gogo/internal/domain"
 	"github.com/sukeke/agent-gogo/internal/executor"
+	intentpkg "github.com/sukeke/agent-gogo/internal/intent"
 	"github.com/sukeke/agent-gogo/internal/planner"
+	"github.com/sukeke/agent-gogo/internal/provider"
 	"github.com/sukeke/agent-gogo/internal/reviewer"
 	"github.com/sukeke/agent-gogo/internal/scheduler"
 	"github.com/sukeke/agent-gogo/internal/tester"
@@ -40,6 +43,8 @@ type Service struct {
 	executor             executor.Executor
 	tester               tester.Tester
 	reviewer             reviewer.Reviewer
+	chainRouter          chain.Router
+	intentAnalyzer       intentpkg.Analyzer
 	communication        CommunicationDispatcher
 	communicationChannel string
 	communicationSession string
@@ -66,8 +71,8 @@ func NewService(store Store) *Service {
 		validator: validator.NewMinimalTaskValidator(),
 		scheduler: scheduler.NewReadyScheduler(store),
 		executor:  executor.NewMinimalExecutor(store),
-		tester:    tester.NewPassingTester(store),
-		reviewer:  reviewer.NewApprovingReviewer(store),
+		tester:    tester.NewMinimalTester(store),
+		reviewer:  reviewer.NewMinimalReviewer(store),
 	}
 }
 
@@ -97,6 +102,12 @@ func (s *Service) UseCommunication(channelID string, sessionID string, dispatche
 	s.communication = dispatcher
 }
 
+func (s *Service) UseLLM(llm provider.LLMProvider, model string) {
+	s.chainRouter = chain.NewLLMRouter(llm, model)
+	s.intentAnalyzer = intentpkg.NewLLMAnalyzer(llm, model)
+	s.planner = planner.NewLLMPlanner(llm, model)
+}
+
 func (s *Service) CreateProject(ctx context.Context, req CreateProjectRequest) (domain.Project, error) {
 	if err := ctx.Err(); err != nil {
 		return domain.Project{}, err
@@ -122,7 +133,20 @@ func (s *Service) PlanProject(ctx context.Context, projectID string) ([]domain.T
 	if err != nil {
 		return nil, err
 	}
-	drafts, err := s.planner.PlanProject(ctx, planner.PlanRequest{Project: project})
+	chainDecision, err := s.routeProject(ctx, project)
+	if err != nil {
+		return nil, err
+	}
+	intentProfile, err := s.analyzeProject(ctx, project, chainDecision)
+	if err != nil {
+		return nil, err
+	}
+	drafts, err := s.planner.PlanProject(ctx, planner.PlanRequest{
+		Project:       project,
+		UserInput:     project.Goal,
+		ChainDecision: chainDecision,
+		IntentProfile: intentProfile,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -147,6 +171,27 @@ func (s *Service) PlanProject(ctx context.Context, projectID string) ([]domain.T
 		return nil, err
 	}
 	return readyTasks, nil
+}
+
+func (s *Service) routeProject(ctx context.Context, project domain.Project) (chain.Decision, error) {
+	if s.chainRouter == nil {
+		return chain.Decision{}, nil
+	}
+	return s.chainRouter.Route(ctx, chain.Request{
+		UserInput: project.Goal,
+		ProjectID: project.ID,
+		Channel:   s.communicationChannel,
+	})
+}
+
+func (s *Service) analyzeProject(ctx context.Context, project domain.Project, decision chain.Decision) (intentpkg.Profile, error) {
+	if s.intentAnalyzer == nil {
+		return intentpkg.Profile{}, nil
+	}
+	return s.intentAnalyzer.Analyze(ctx, intentpkg.Request{
+		UserInput:     project.Goal,
+		ChainDecision: decision,
+	})
 }
 
 func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunResult, error) {

@@ -22,22 +22,22 @@ type Reviewer interface {
 	Review(ctx context.Context, task domain.Task, attempt domain.TaskAttempt) (Result, error)
 }
 
-type ApprovingReviewer struct {
+type MinimalReviewer struct {
 	store Store
 }
 
-func NewApprovingReviewer(store Store) *ApprovingReviewer {
-	return &ApprovingReviewer{store: store}
+func NewMinimalReviewer(store Store) *MinimalReviewer {
+	return &MinimalReviewer{store: store}
 }
 
-func (r *ApprovingReviewer) Review(ctx context.Context, task domain.Task, attempt domain.TaskAttempt) (Result, error) {
+func (r *MinimalReviewer) Review(ctx context.Context, task domain.Task, attempt domain.TaskAttempt) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
 	result, err := r.store.CreateReviewResult(ctx, domain.ReviewResult{
 		AttemptID: attempt.ID,
 		Status:    domain.ReviewStatusApproved,
-		Summary:   "minimal reviewer approved the task result",
+		Summary:   "minimal reviewer completed baseline review",
 	})
 	if err != nil {
 		return Result{}, err

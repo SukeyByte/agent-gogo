@@ -4,11 +4,16 @@ import (
 	"context"
 	"strings"
 
+	"github.com/sukeke/agent-gogo/internal/chain"
 	"github.com/sukeke/agent-gogo/internal/domain"
+	"github.com/sukeke/agent-gogo/internal/intent"
 )
 
 type PlanRequest struct {
-	Project domain.Project
+	Project       domain.Project
+	UserInput     string
+	ChainDecision chain.Decision
+	IntentProfile intent.Profile
 }
 
 type Planner interface {

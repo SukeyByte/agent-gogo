@@ -20,15 +20,15 @@ type Tester interface {
 	Test(ctx context.Context, task domain.Task, attempt domain.TaskAttempt) (Result, error)
 }
 
-type PassingTester struct {
+type MinimalTester struct {
 	store Store
 }
 
-func NewPassingTester(store Store) *PassingTester {
-	return &PassingTester{store: store}
+func NewMinimalTester(store Store) *MinimalTester {
+	return &MinimalTester{store: store}
 }
 
-func (t *PassingTester) Test(ctx context.Context, task domain.Task, attempt domain.TaskAttempt) (Result, error) {
+func (t *MinimalTester) Test(ctx context.Context, task domain.Task, attempt domain.TaskAttempt) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
@@ -40,7 +40,7 @@ func (t *PassingTester) Test(ctx context.Context, task domain.Task, attempt doma
 		AttemptID: attempt.ID,
 		Name:      "minimal-runtime-smoke",
 		Status:    domain.TestStatusPassed,
-		Output:    "minimal tester passed",
+		Output:    "minimal tester completed baseline verification",
 	})
 	if err != nil {
 		return Result{}, err
