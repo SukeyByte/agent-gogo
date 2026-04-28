@@ -25,6 +25,7 @@ func OpenSQLite(ctx context.Context, path string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(1)
 	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -178,7 +179,7 @@ func (s *SQLiteStore) GetTask(ctx context.Context, id string) (domain.Task, erro
 
 func (s *SQLiteStore) ListTasksByProject(ctx context.Context, projectID string) ([]domain.Task, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id
+		SELECT id, project_id, title, description, status, acceptance_criteria, created_at, updated_at
 		FROM tasks
 		WHERE project_id = ?
 		ORDER BY created_at, id
@@ -190,11 +191,20 @@ func (s *SQLiteStore) ListTasksByProject(ctx context.Context, projectID string) 
 
 	var tasks []domain.Task
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var task domain.Task
+		var criteria string
+		var createdAt, updatedAt string
+		if err := rows.Scan(&task.ID, &task.ProjectID, &task.Title, &task.Description, &task.Status, &criteria, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
-		task, err := s.GetTask(ctx, id)
+		if err := json.Unmarshal([]byte(criteria), &task.AcceptanceCriteria); err != nil {
+			return nil, err
+		}
+		task.CreatedAt, err = parseTime(createdAt)
+		if err != nil {
+			return nil, err
+		}
+		task.UpdatedAt, err = parseTime(updatedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -295,6 +305,55 @@ func (s *SQLiteStore) CreateTaskAttempt(ctx context.Context, taskID string) (dom
 		return domain.TaskAttempt{}, err
 	}
 	return attempt, nil
+}
+
+func (s *SQLiteStore) CompleteTaskAttempt(ctx context.Context, attemptID string, status domain.AttemptStatus, message string) (domain.TaskAttempt, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.TaskAttempt{}, err
+	}
+	defer rollback(tx)
+
+	attempt, err := getTaskAttemptTx(ctx, tx, attemptID)
+	if err != nil {
+		return domain.TaskAttempt{}, err
+	}
+	now := utcNow()
+	_, err = tx.ExecContext(ctx, `
+		UPDATE task_attempts
+		SET status = ?, ended_at = ?, error = ?
+		WHERE id = ?
+	`, status, formatTime(now), errorForAttemptStatus(status, message), attemptID)
+	if err != nil {
+		return domain.TaskAttempt{}, err
+	}
+	event := domain.TaskEvent{
+		ID:        newID(),
+		TaskID:    attempt.TaskID,
+		AttemptID: attempt.ID,
+		Type:      "task_attempt.completed",
+		Message:   message,
+		CreatedAt: now,
+	}
+	if err := insertTaskEventTx(ctx, tx, event); err != nil {
+		return domain.TaskAttempt{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.TaskAttempt{}, err
+	}
+	attempt.Status = status
+	attempt.EndedAt = &now
+	attempt.Error = errorForAttemptStatus(status, message)
+	return attempt, nil
+}
+
+func (s *SQLiteStore) GetTaskAttempt(ctx context.Context, attemptID string) (domain.TaskAttempt, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.TaskAttempt{}, err
+	}
+	defer rollback(tx)
+	return getTaskAttemptTx(ctx, tx, attemptID)
 }
 
 func (s *SQLiteStore) AddTaskEvent(ctx context.Context, event domain.TaskEvent) (domain.TaskEvent, error) {
@@ -470,6 +529,32 @@ func getTaskTx(ctx context.Context, tx *sql.Tx, id string) (domain.Task, error) 
 	return task, nil
 }
 
+func getTaskAttemptTx(ctx context.Context, tx *sql.Tx, id string) (domain.TaskAttempt, error) {
+	var attempt domain.TaskAttempt
+	var startedAt string
+	var endedAt sql.NullString
+	err := tx.QueryRowContext(ctx, `
+		SELECT id, task_id, number, status, started_at, ended_at, error
+		FROM task_attempts
+		WHERE id = ?
+	`, id).Scan(&attempt.ID, &attempt.TaskID, &attempt.Number, &attempt.Status, &startedAt, &endedAt, &attempt.Error)
+	if err != nil {
+		return domain.TaskAttempt{}, err
+	}
+	attempt.StartedAt, err = parseTime(startedAt)
+	if err != nil {
+		return domain.TaskAttempt{}, err
+	}
+	if endedAt.Valid {
+		parsedEndedAt, err := parseTime(endedAt.String)
+		if err != nil {
+			return domain.TaskAttempt{}, err
+		}
+		attempt.EndedAt = &parsedEndedAt
+	}
+	return attempt, nil
+}
+
 func insertTaskEventTx(ctx context.Context, tx *sql.Tx, event domain.TaskEvent) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO task_events (id, task_id, attempt_id, type, from_state, to_state, message, payload, created_at)
@@ -496,6 +581,13 @@ func formatTime(t time.Time) string {
 
 func parseTime(value string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, value)
+}
+
+func errorForAttemptStatus(status domain.AttemptStatus, message string) string {
+	if status == domain.AttemptStatusFailed {
+		return message
+	}
+	return ""
 }
 
 func loadInitialMigration() (string, error) {
