@@ -8,7 +8,7 @@ import (
 )
 
 func TestSearchReturnsLightweightCardsOnly(t *testing.T) {
-	registry := NewMockRegistry()
+	registry := NewCatalogRegistry()
 	cards, err := registry.Search(context.Background(), SearchRequest{
 		Query:                "run tests",
 		TaskType:             "code",
@@ -30,7 +30,7 @@ func TestSearchReturnsLightweightCardsOnly(t *testing.T) {
 }
 
 func TestLoadSchemaAndActivateAreOnDemand(t *testing.T) {
-	registry := NewMockRegistry()
+	registry := NewCatalogRegistry()
 	cards, err := registry.Search(context.Background(), SearchRequest{
 		RequiredCapabilities: []string{"code.search", "test.run"},
 	})
@@ -69,7 +69,7 @@ func TestLoadSchemaAndActivateAreOnDemand(t *testing.T) {
 }
 
 func TestLoadSchemaRejectsUnknownRef(t *testing.T) {
-	registry := NewMockRegistry()
+	registry := NewCatalogRegistry()
 	if _, err := registry.LoadSchema(context.Background(), "fn:nope@v1"); err == nil {
 		t.Fatal("expected missing schema error")
 	}

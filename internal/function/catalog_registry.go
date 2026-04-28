@@ -9,22 +9,22 @@ import (
 
 var ErrNotFound = errors.New("function schema not found")
 
-type MockRegistry struct {
+type CatalogRegistry struct {
 	schemas map[string]Schema
 }
 
-func NewMockRegistry(schemas ...Schema) *MockRegistry {
+func NewCatalogRegistry(schemas ...Schema) *CatalogRegistry {
 	if len(schemas) == 0 {
 		schemas = defaultSchemas()
 	}
-	registry := &MockRegistry{schemas: make(map[string]Schema, len(schemas))}
+	registry := &CatalogRegistry{schemas: make(map[string]Schema, len(schemas))}
 	for _, schema := range schemas {
 		registry.schemas[schema.SchemaRef] = normalizeSchema(schema)
 	}
 	return registry
 }
 
-func (r *MockRegistry) Search(ctx context.Context, req SearchRequest) ([]Card, error) {
+func (r *CatalogRegistry) Search(ctx context.Context, req SearchRequest) ([]Card, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -60,7 +60,7 @@ func (r *MockRegistry) Search(ctx context.Context, req SearchRequest) ([]Card, e
 	return result, nil
 }
 
-func (r *MockRegistry) LoadSchema(ctx context.Context, schemaRef string) (Schema, error) {
+func (r *CatalogRegistry) LoadSchema(ctx context.Context, schemaRef string) (Schema, error) {
 	if err := ctx.Err(); err != nil {
 		return Schema{}, err
 	}
@@ -71,7 +71,7 @@ func (r *MockRegistry) LoadSchema(ctx context.Context, schemaRef string) (Schema
 	return cloneSchema(schema), nil
 }
 
-func (r *MockRegistry) Activate(ctx context.Context, cards []Card) (ActiveSet, error) {
+func (r *CatalogRegistry) Activate(ctx context.Context, cards []Card) (ActiveSet, error) {
 	if err := ctx.Err(); err != nil {
 		return ActiveSet{}, err
 	}
@@ -150,7 +150,7 @@ func searchReason(schema Schema, req SearchRequest, score int) string {
 	if req.TaskType != "" && containsString(schema.TaskTypes, req.TaskType) {
 		return "task type matched"
 	}
-	return "query matched mock function metadata"
+	return "query matched function metadata"
 }
 
 func tokenize(value string) []string {
@@ -179,7 +179,7 @@ func normalizeSchema(schema Schema) Schema {
 	schema.Tags = sortedUnique(schema.Tags)
 	schema.TaskTypes = sortedUnique(schema.TaskTypes)
 	if schema.Provider == "" {
-		schema.Provider = "mock"
+		schema.Provider = "builtin"
 	}
 	return schema
 }
@@ -220,9 +220,9 @@ func defaultSchemas() []Schema {
 			RiskLevel:     "low",
 			InputSummary:  "query string and optional path filters",
 			OutputSummary: "matched file references and snippets",
-			Provider:      "mock",
+			Provider:      "builtin",
 			SchemaRef:     "fn:code.search@v1",
-			VersionHash:   "mock-code-search-v1",
+			VersionHash:   "builtin-code-search-v1",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"query"},
@@ -246,9 +246,9 @@ func defaultSchemas() []Schema {
 			RiskLevel:     "medium",
 			InputSummary:  "test command",
 			OutputSummary: "pass/fail status and output summary",
-			Provider:      "mock",
+			Provider:      "builtin",
 			SchemaRef:     "fn:test.run@v1",
-			VersionHash:   "mock-test-run-v1",
+			VersionHash:   "builtin-test-run-v1",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"command"},
@@ -272,9 +272,9 @@ func defaultSchemas() []Schema {
 			RiskLevel:     "medium",
 			InputSummary:  "artifact path and content summary",
 			OutputSummary: "artifact reference",
-			Provider:      "mock",
+			Provider:      "builtin",
 			SchemaRef:     "fn:artifact.write@v1",
-			VersionHash:   "mock-artifact-write-v1",
+			VersionHash:   "builtin-artifact-write-v1",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
