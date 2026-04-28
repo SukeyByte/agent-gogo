@@ -1,0 +1,30 @@
+# Local configuration
+.env
+.env.*
+!.env.example
+config.yaml
+
+# Runtime data
+data/
+artifacts/
+*.db
+*.db-shm
+*.db-wal
+
+# Go
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# Frontend
+node_modules/
+web/dist/
+web/.vite/
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
