@@ -39,7 +39,7 @@ internal/app/          Application bootstrap surface
 docs/prd/              Product requirements
 docs/design/           Architecture and design notes
 configs/               Example configuration
-skills/                Built-in or local skill definitions
+.claude/skills/        Project Claude-compatible skill packages
 personas/              Built-in or local persona definitions
 migrations/            SQLite migrations
 web/                   Future Web Console

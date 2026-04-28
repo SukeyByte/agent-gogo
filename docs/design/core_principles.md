@@ -8,7 +8,7 @@
 
 ## 1. Runtime Core 独立于 Web Console
 
-Runtime Core 是系统的可嵌入执行内核，负责 Chain Router、Context Builder、Planner、Task DAG、Scheduler、Executor、Tool Runtime、Event Store、Tester 和 Reviewer。
+Runtime Core 是系统的可嵌入执行内核，负责 Chain Router、Intent Analyzer、Function Search、Capability Resolver、Context Builder、Planner、Task DAG、Scheduler、Executor、Tool Runtime、Event Store、Tester 和 Reviewer。
 
 Web Console 是 Runtime Core 的一个控制入口和可视化界面，不应成为业务逻辑的宿主。CLI、HTTP API 和未来 Channel 应该复用同一个 Runtime Core。
 
@@ -35,42 +35,47 @@ Web Console 是 Runtime Core 的一个控制入口和可视化界面，不应成
 
 ## 3. Provider Interface 隔离外部系统
 
-LLM、Embedding、Browser、Tool、Storage 都应通过接口接入。Runtime 不绑定单一模型、单一浏览器实现或单一工具生态。
+LLM、Embedding、Browser、Tool、Communication、Storage 都应通过接口接入。Runtime 不绑定单一模型、单一浏览器实现、单一通讯工具或单一工具生态。
 
 架构含义：
 
 1. LLMProvider 负责模型调用。
 2. EmbeddingProvider 负责向量生成。
 3. BrowserProvider 负责底层浏览器动作。
-4. ToolProvider 负责工具注册和调用。
-5. Provider 的失败、超时和限流必须被 Runtime 明确处理。
+4. CommunicationProvider 负责 Telegram、WhatsApp、Email 等外部通讯工具。
+5. ToolProvider 负责工具注册和调用。
+6. Provider 的失败、超时和限流必须被 Runtime 明确处理。
 
 ---
 
-## 4. Skill / Persona / Memory 是可插拔上下文资产
+## 4. Function / Skill / Persona / Memory 是可插拔上下文资产
 
-Skill、Persona 和 Memory 都是 Context Builder 的输入资产，不应和 Planner、Executor 的核心控制流硬耦合。
+Function、Skill、Persona 和 Memory 都是 Context Builder 的输入资产，不应和 Planner、Executor 的核心控制流硬耦合。
 
 架构含义：
 
-1. Skill 决定会什么，按标签和语义检索加载。
-2. Persona 决定怎么协作和表达，不替代事实来源。
-3. Memory 决定知道什么，区分精确记忆和模糊记忆。
-4. Context Builder 负责排序、压缩和缓存友好布局。
-5. 高频稳定内容前置，动态内容后置。
+1. Function 提供 LLM 可发现的调用入口，但 schema 必须按需加载。
+2. Skill 提供“怎么做”的指导，兼容 Claude-style `SKILL.md` package，按意图和索引检索加载。
+3. Persona 决定怎么协作和表达，不替代事实来源。
+4. Memory 决定知道什么，区分精确记忆和模糊记忆。
+5. Capability / Tool 决定系统实际能调用什么。
+6. Context Builder 负责确定性序列化、压缩和缓存友好布局。
+7. 高频稳定内容前置，动态内容后置。
+8. L0 / L1 / L2 context layer 必须在相同输入和相同版本下序列化为完全相同的字节。
 
 ---
 
-## 5. 所有副作用必须经过 Tool Runtime
+## 5. 所有副作用必须经过 Runtime 边界
 
-LLM 不直接修改文件、点击页面、运行命令、提交表单或发送消息。任何会影响外部世界的动作都必须经过 Tool Runtime。
+LLM 不直接修改文件、点击页面、运行命令、提交表单或发送消息。任何会影响外部世界的动作都必须经过 Tool Runtime 或 Communication Runtime。
 
 架构含义：
 
 1. ToolSpec 必须声明输入 schema、输出 schema、标签和风险等级。
 2. 高风险和关键风险动作必须进入人工确认流程。
 3. ToolResult 必须带有成功状态、错误信息、证据和元数据。
-4. 审计日志必须能回答：谁触发、何时触发、用什么参数、结果如何。
+4. 发送消息、请求确认、请求附件等用户通讯动作必须经过 Communication Runtime。
+5. 审计日志必须能回答：谁触发、何时触发、用什么参数、结果如何。
 
 ---
 
@@ -139,6 +144,10 @@ v0.1 最重要的是证明 Runtime 闭环可行，而不是一次性完成所有
 ```text
 输入目标
 → Chain Router
+→ Intent Analyzer
+→ Function Search
+→ Capability Resolver
+→ Persona / Skill / Memory Router
 → Context Builder
 → Planner
 → Validator
@@ -152,10 +161,28 @@ v0.1 最重要的是证明 Runtime 闭环可行，而不是一次性完成所有
 → Done / Fix Task / Replan
 ```
 
+Context 序列化必须分层：
+
+```text
+L0 System Cache Layer:
+  RuntimeRules / SecurityRules / ActivePersonas
+
+L1 Project / Route Cache Layer:
+  ChannelCapabilities / MetaFunctionSchemas / ActiveCapabilities / ActiveFunctionSchemas / ActiveSkillInstructions
+
+L2 Task Cache Layer:
+  IntentProfile / ProjectState / TaskState / RelevantMemories / AcceptanceCriteria
+
+L3 Dynamic Step Layer:
+  EvidenceRefs / RecentMessages / CurrentUserInput
+```
+
+L0 / L1 / L2 禁止混入当前时间、随机 ID、请求 ID、最新工具结果和其他动态内容。所有块内集合必须按稳定 ID 或 name 排序。
+
 优先级建议：
 
-1. 先实现 Project、Task、Task Event 和状态机。
+1. 先实现 Project、Task、TaskAttempt、TaskEvent 和状态机。
 2. 再实现 Planner、Validator、Scheduler 和 Executor。
-3. 再接入最小 Tool Runtime。
+3. 再接入最小 Function Runtime / Tool Runtime。
 4. 再加入 Tester、Reviewer 和 Fix Task。
-5. 最后扩展 Web Console、Browser Runtime、Memory、Skill Manager 和 Persona Manager。
+5. 最后扩展 Web Console、Browser Runtime、Memory Runtime、Skill Runtime 和 Persona Runtime。

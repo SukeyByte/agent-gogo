@@ -22,7 +22,9 @@ browser:
 storage:
   sqlite_path: "./data/agent.db"
   artifact_path: "./data/artifacts"
-  skill_path: "./skills"
+  skill_roots:
+    - "~/.claude/skills"
+    - ".claude/skills"
   persona_path: "./personas"
 
 runtime:
