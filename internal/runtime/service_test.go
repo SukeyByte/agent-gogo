@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/sukeke/agent-gogo/internal/communication"
 	"github.com/sukeke/agent-gogo/internal/domain"
 	"github.com/sukeke/agent-gogo/internal/store"
 )
@@ -74,5 +75,54 @@ func TestServiceRunsMinimalRuntimeLoop(t *testing.T) {
 	}
 	if len(result.Events) < 7 {
 		t.Fatalf("expected lifecycle events to be recorded, got %d", len(result.Events))
+	}
+}
+
+func TestServiceEmitsCommunicationIntents(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	outbox := communication.NewMemoryOutbox()
+	commRuntime := communication.NewRuntime(outbox, communication.NewRenderer())
+	web := communication.NewWebConsoleAdapter("web")
+	commRuntime.RegisterChannel("web", web)
+
+	service := NewService(sqlite)
+	service.UseCommunication("web", "session-1", commRuntime)
+
+	project, err := service.CreateProject(ctx, CreateProjectRequest{
+		Name: "M5",
+		Goal: "Emit communication intents",
+	})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if _, err := service.PlanProject(ctx, project.ID); err != nil {
+		t.Fatalf("plan project: %v", err)
+	}
+	if _, err := service.RunNextTask(ctx, project.ID); err != nil {
+		t.Fatalf("run next task: %v", err)
+	}
+
+	records, err := outbox.List(ctx)
+	if err != nil {
+		t.Fatalf("list outbox: %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("expected 3 communication records, got %d", len(records))
+	}
+	if records[2].Intent.Type != communication.IntentNotifyDone {
+		t.Fatalf("expected notify_done intent, got %s", records[2].Intent.Type)
+	}
+	messages := web.Messages()
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 web messages, got %d", len(messages))
+	}
+	if messages[2].Type != communication.IntentNotifyDone {
+		t.Fatalf("expected web notify_done message, got %s", messages[2].Type)
 	}
 }

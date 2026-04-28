@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 
+	comm "github.com/sukeke/agent-gogo/internal/communication"
 	"github.com/sukeke/agent-gogo/internal/domain"
 	"github.com/sukeke/agent-gogo/internal/executor"
 	"github.com/sukeke/agent-gogo/internal/planner"
@@ -26,14 +28,21 @@ type Store interface {
 	ListTaskEvents(ctx context.Context, taskID string) ([]domain.TaskEvent, error)
 }
 
+type CommunicationDispatcher interface {
+	Dispatch(ctx context.Context, intent comm.CommunicationIntent) (comm.DeliveryReceipt, error)
+}
+
 type Service struct {
-	store     Store
-	planner   planner.Planner
-	validator validator.TaskValidator
-	scheduler scheduler.Scheduler
-	executor  executor.Executor
-	tester    tester.Tester
-	reviewer  reviewer.Reviewer
+	store                Store
+	planner              planner.Planner
+	validator            validator.TaskValidator
+	scheduler            scheduler.Scheduler
+	executor             executor.Executor
+	tester               tester.Tester
+	reviewer             reviewer.Reviewer
+	communication        CommunicationDispatcher
+	communicationChannel string
+	communicationSession string
 }
 
 type CreateProjectRequest struct {
@@ -82,14 +91,27 @@ func NewServiceWithComponents(
 	}
 }
 
+func (s *Service) UseCommunication(channelID string, sessionID string, dispatcher CommunicationDispatcher) {
+	s.communicationChannel = channelID
+	s.communicationSession = sessionID
+	s.communication = dispatcher
+}
+
 func (s *Service) CreateProject(ctx context.Context, req CreateProjectRequest) (domain.Project, error) {
 	if err := ctx.Err(); err != nil {
 		return domain.Project{}, err
 	}
-	return s.store.CreateProject(ctx, domain.Project{
+	project, err := s.store.CreateProject(ctx, domain.Project{
 		Name: req.Name,
 		Goal: req.Goal,
 	})
+	if err != nil {
+		return domain.Project{}, err
+	}
+	if err := s.emit(ctx, comm.NewMessageIntent(s.communicationChannel, fmt.Sprintf("Project created: %s", project.Name)), project.ID); err != nil {
+		return domain.Project{}, err
+	}
+	return project, nil
 }
 
 func (s *Service) PlanProject(ctx context.Context, projectID string) ([]domain.Task, error) {
@@ -121,6 +143,9 @@ func (s *Service) PlanProject(ctx context.Context, projectID string) ([]domain.T
 		}
 		readyTasks = append(readyTasks, ready)
 	}
+	if err := s.emit(ctx, comm.NewMessageIntent(s.communicationChannel, fmt.Sprintf("Planned %d task(s)", len(readyTasks))), project.ID); err != nil {
+		return nil, err
+	}
 	return readyTasks, nil
 }
 
@@ -148,12 +173,27 @@ func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunRes
 	if err != nil {
 		return TaskRunResult{}, err
 	}
-	return TaskRunResult{
+	result := TaskRunResult{
 		ProjectID:    projectID,
 		Task:         reviewed.Task,
 		Attempt:      reviewed.Attempt,
 		TestResult:   tested.TestResult,
 		ReviewResult: reviewed.ReviewResult,
 		Events:       events,
-	}, nil
+	}
+	if err := s.emit(ctx, comm.NewDoneIntent(s.communicationChannel, fmt.Sprintf("Task done: %s", reviewed.Task.Title)), projectID); err != nil {
+		return TaskRunResult{}, err
+	}
+	return result, nil
+}
+
+func (s *Service) emit(ctx context.Context, intent comm.CommunicationIntent, projectID string) error {
+	if s.communication == nil || s.communicationChannel == "" {
+		return nil
+	}
+	intent.ChannelID = s.communicationChannel
+	intent.SessionID = s.communicationSession
+	intent.ProjectID = projectID
+	_, err := s.communication.Dispatch(ctx, intent)
+	return err
 }
