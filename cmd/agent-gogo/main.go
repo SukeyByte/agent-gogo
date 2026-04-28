@@ -1,12 +1,11 @@
 package main
 
 import (
-	"fmt"
+	"os"
 
 	"github.com/sukeke/agent-gogo/internal/app"
 )
 
 func main() {
-	fmt.Printf("agent-gogo %s\n", app.Version)
-	fmt.Println("runtime scaffold is ready")
+	os.Exit(app.Main(os.Args[1:], os.Stdout, os.Stderr))
 }

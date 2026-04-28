@@ -3,21 +3,28 @@ server:
   port: 8080
 
 llm:
-  provider: "openai"
-  model: ""
-  base_url: ""
-  api_key: "${OPENAI_API_KEY}"
+  provider: "deepseek"
+  model: "deepseek-v4-flash"
+  base_url: "https://api.deepseek.com"
+  api_key: "${DEEPSEEK_API_KEY}"
   timeout: 120
-
-embedding:
-  provider: "openai"
-  model: ""
+  thinking_enabled: false
+  reasoning_effort: ""
 
 browser:
   provider: "chrome_mcp"
   mcp_url: "http://127.0.0.1:9222"
-  headless: false
+  auto_start_mcp: true
+  debug_port: 9223
+  chrome_path: ""
+  user_data_dir: ""
+  headless: true
   timeout: 60
+  max_summary_length: 12000
+
+communication:
+  channel_id: "cli"
+  session_id: "local"
 
 storage:
   sqlite_path: "./data/agent.db"
