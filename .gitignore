@@ -29,3 +29,4 @@ web/.vite/
 .idea/
 .vscode/
 *.swp
+logs/

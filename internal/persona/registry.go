@@ -38,6 +38,12 @@ func Discover(ctx context.Context, root string) (*Registry, error) {
 	if root == "" {
 		return registry, nil
 	}
+	if _, err := os.Stat(root); err != nil {
+		if os.IsNotExist(err) {
+			return registry, nil
+		}
+		return nil, err
+	}
 	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err

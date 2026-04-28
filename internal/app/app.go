@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,15 +15,23 @@ import (
 	"github.com/sukeke/agent-gogo/internal/browser"
 	"github.com/sukeke/agent-gogo/internal/communication"
 	appconfig "github.com/sukeke/agent-gogo/internal/config"
+	"github.com/sukeke/agent-gogo/internal/contextbuilder"
+	"github.com/sukeke/agent-gogo/internal/demo/webanswer"
 	"github.com/sukeke/agent-gogo/internal/domain"
 	"github.com/sukeke/agent-gogo/internal/executor"
+	"github.com/sukeke/agent-gogo/internal/function"
+	"github.com/sukeke/agent-gogo/internal/memory"
+	"github.com/sukeke/agent-gogo/internal/observability"
+	"github.com/sukeke/agent-gogo/internal/persona"
 	"github.com/sukeke/agent-gogo/internal/planner"
 	"github.com/sukeke/agent-gogo/internal/provider"
 	"github.com/sukeke/agent-gogo/internal/reviewer"
 	appruntime "github.com/sukeke/agent-gogo/internal/runtime"
 	"github.com/sukeke/agent-gogo/internal/scheduler"
+	"github.com/sukeke/agent-gogo/internal/skill"
 	"github.com/sukeke/agent-gogo/internal/store"
 	"github.com/sukeke/agent-gogo/internal/tester"
+	"github.com/sukeke/agent-gogo/internal/tools"
 	"github.com/sukeke/agent-gogo/internal/validator"
 )
 
@@ -63,12 +72,128 @@ func Main(args []string, stdout io.Writer, stderr io.Writer) int {
 			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
+	case "write-story", "story":
+		if len(rest) == 0 {
+			_, _ = fmt.Fprintln(stderr, "write-story requires a goal")
+			return 2
+		}
+		if err := RunStory(ctx, strings.Join(rest, " "), opts, stdout); err != nil {
+			_, _ = fmt.Fprintln(stderr, err)
+			return 1
+		}
 	default:
 		_, _ = fmt.Fprintf(stderr, "unknown command %q\n", command)
 		printUsage(stderr)
 		return 2
 	}
 	return 0
+}
+
+func RunStory(ctx context.Context, goal string, opts Options, writer io.Writer) error {
+	cfg, err := appconfig.Load(opts.ConfigPath)
+	if err != nil {
+		return err
+	}
+	logger, err := observability.NewFileLogger(cfg.Storage.LogPath, "story")
+	if err != nil {
+		return err
+	}
+	llm, err := newLLMProvider(cfg)
+	if err != nil {
+		return err
+	}
+	loggedLLM := observability.NewLoggingLLMProvider(llm, logger)
+	sqlite, err := openStore(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer sqlite.Close()
+
+	commRuntime := newCommunicationRuntime(cfg, writer)
+	toolRuntime := tools.NewBuiltinRuntime(sqlite, cfg.Storage.ArtifactPath)
+	toolRuntime.UseLogger(logger)
+	toolRuntime.UseSecurityPolicy(tools.SecurityPolicy{
+		AllowShell:                cfg.Security.AllowShell,
+		RequireConfirmationAtRisk: confirmationRisk(cfg),
+	}, tools.AutoConfirmationGate{Approved: true})
+
+	skillRegistry, err := skill.Discover(ctx, storySkillSources(cfg)...)
+	if err != nil {
+		return err
+	}
+	personaRegistry, err := persona.Discover(ctx, cfg.Storage.PersonaPath)
+	if err != nil {
+		return err
+	}
+	memoryIndex := memory.NewIndex()
+	novelistPersona, err := generateNovelistPersona(ctx, loggedLLM, cfg.LLM.Model, goal, logger)
+	if err != nil {
+		return err
+	}
+
+	service := appruntime.NewServiceWithComponents(
+		sqlite,
+		planner.NewLLMPlanner(loggedLLM, cfg.LLM.Model),
+		validator.NewMinimalTaskValidator(),
+		scheduler.NewReadyScheduler(sqlite),
+		executor.NewStoryExecutor(executor.StoryExecutorOptions{
+			Store:  sqlite,
+			Tools:  toolRuntime,
+			LLM:    loggedLLM,
+			Model:  cfg.LLM.Model,
+			Logger: logger,
+		}),
+		tester.NewMinimalTester(sqlite),
+		reviewer.NewLLMReviewer(sqlite, loggedLLM, cfg.LLM.Model),
+	)
+	service.UseLLM(loggedLLM, cfg.LLM.Model)
+	service.UseCommunication(cfg.Communication.ChannelID, cfg.Communication.SessionID, commRuntime)
+	service.UseContextAssets(function.NewCatalogRegistry(), skillRegistry, personaRegistry, memoryIndex, contextbuilder.NewSerializer(contextbuilder.SerializerOptions{}), logger)
+	service.AddActivePersona(novelistPersona)
+
+	if err := logger.Log(ctx, "input", map[string]any{
+		"goal":          goal,
+		"skill_sources": storySkillSources(cfg),
+	}); err != nil {
+		return err
+	}
+	project, err := service.CreateProject(ctx, appruntime.CreateProjectRequest{
+		Name: "Short mystery story",
+		Goal: goal,
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := service.PlanProject(ctx, project.ID); err != nil {
+		return err
+	}
+	var story domain.Observation
+	ranTasks := 0
+	for {
+		result, err := service.RunNextTask(ctx, project.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		ranTasks++
+		if candidate, obsErr := latestObservation(ctx, sqlite, result.Attempt.ID, "story.final"); obsErr == nil {
+			story = candidate
+		}
+	}
+	if ranTasks == 0 {
+		return sql.ErrNoRows
+	}
+	if strings.TrimSpace(story.Summary) == "" {
+		return errors.New("story.final observation not found")
+	}
+	logChannel(ctx, commRuntime, cfg, "output", story.Summary)
+	logChannel(ctx, commRuntime, cfg, "logs", logger.Path())
+	return logger.Log(ctx, "channel.output", map[string]any{
+		"channel_id": cfg.Communication.ChannelID,
+		"log_file":   logger.Path(),
+	})
 }
 
 func RunPlan(ctx context.Context, goal string, opts Options, writer io.Writer) error {
@@ -130,7 +255,7 @@ func RunWebAnswer(ctx context.Context, url string, goal string, opts Options, wr
 	defer sqlite.Close()
 
 	commRuntime := newCommunicationRuntime(cfg, writer)
-	webExecutor := executor.NewWebAnswerExecutor(sqlite, browserRuntime, llm, cfg.LLM.Model, url, goal)
+	webExecutor := webanswer.NewExecutor(sqlite, browserRuntime, llm, cfg.LLM.Model, url, goal)
 	service := appruntime.NewServiceWithComponents(
 		sqlite,
 		planner.NewLLMPlanner(llm, cfg.LLM.Model),
@@ -296,16 +421,59 @@ func renderEvents(events []domain.TaskEvent) string {
 }
 
 func latestAnswerObservation(ctx context.Context, sqlite *store.SQLiteStore, attemptID string) (domain.Observation, error) {
+	return latestObservation(ctx, sqlite, attemptID, "llm.answer")
+}
+
+func latestObservation(ctx context.Context, sqlite *store.SQLiteStore, attemptID string, typ string) (domain.Observation, error) {
 	observations, err := sqlite.ListObservationsByAttempt(ctx, attemptID)
 	if err != nil {
 		return domain.Observation{}, err
 	}
 	for i := len(observations) - 1; i >= 0; i-- {
-		if observations[i].Type == "llm.answer" {
+		if observations[i].Type == typ {
 			return observations[i], nil
 		}
 	}
-	return domain.Observation{}, errors.New("answer observation not found")
+	return domain.Observation{}, fmt.Errorf("%s observation not found", typ)
+}
+
+func generateNovelistPersona(ctx context.Context, llm provider.LLMProvider, model string, goal string, logger observability.Logger) (contextbuilder.Persona, error) {
+	resp, err := llm.Chat(ctx, provider.ChatRequest{
+		Model: model,
+		Messages: []provider.ChatMessage{
+			{Role: "system", Content: "你是 agent-gogo 的 Persona Composer。请为当前任务生成一个临时小说家分人格，只输出可放进系统上下文的简洁角色指令，不要输出 JSON，不要包含 API key。"},
+			{Role: "user", Content: goal},
+		},
+		Metadata: map[string]string{"stage": "persona.generate", "persona_id": "ephemeral-novelist"},
+	})
+	if err != nil {
+		return contextbuilder.Persona{}, err
+	}
+	instructions := strings.TrimSpace(resp.Text)
+	if instructions == "" {
+		return contextbuilder.Persona{}, errors.New("generated novelist persona is empty")
+	}
+	persona := contextbuilder.Persona{
+		ID:           "ephemeral-novelist",
+		Name:         "小说家分人格",
+		VersionHash:  "runtime-generated-v1",
+		Instructions: instructions,
+	}
+	if logger != nil {
+		_ = logger.Log(ctx, "persona.generate", persona)
+	}
+	return persona, nil
+}
+
+func storySkillSources(cfg appconfig.Config) []string {
+	return append([]string(nil), cfg.Storage.SkillRoots...)
+}
+
+func confirmationRisk(cfg appconfig.Config) string {
+	if cfg.Security.RequireConfirmHighRisk {
+		return "high"
+	}
+	return ""
 }
 
 func printUsage(writer io.Writer) {
@@ -314,6 +482,7 @@ func printUsage(writer io.Writer) {
 Usage:
   agent-gogo plan "目标"
   agent-gogo answer-url https://example.com "问题"
+  agent-gogo write-story "我希望完成一个短篇推理小说的编写"
 
 Config:
   DEEPSEEK_API_KEY is required for the default DeepSeek provider.

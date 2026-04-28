@@ -57,6 +57,7 @@ type Task struct {
 	Description        string
 	Status             TaskStatus
 	AcceptanceCriteria []string
+	DependsOn          []string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }

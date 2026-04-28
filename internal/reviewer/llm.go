@@ -8,6 +8,7 @@ import (
 
 	"github.com/sukeke/agent-gogo/internal/domain"
 	"github.com/sukeke/agent-gogo/internal/provider"
+	"github.com/sukeke/agent-gogo/internal/textutil"
 )
 
 type LLMReviewStore interface {
@@ -54,7 +55,7 @@ func (r *LLMReviewer) Review(ctx context.Context, task domain.Task, attempt doma
 		return Result{}, err
 	}
 	var decision llmReviewDecision
-	if err := decodeJSONObject(resp.Text, &decision); err != nil {
+	if err := textutil.DecodeJSONObject(resp.Text, &decision); err != nil {
 		return Result{}, err
 	}
 	summary := strings.TrimSpace(decision.Summary)
@@ -108,22 +109,6 @@ const llmReviewerSystemPrompt = `You are agent-gogo's reviewer.
 Return JSON only with fields approved and summary.
 Reject empty, ungrounded, or unverifiable task outputs.
 For browser tasks, visible DOM text plus evidence URL is valid evidence; do not require raw HTML or HTTP status unless the user explicitly requested raw HTML or status codes.`
-
-func decodeJSONObject(text string, target any) error {
-	text = strings.TrimSpace(text)
-	if strings.HasPrefix(text, "```") {
-		text = strings.TrimPrefix(text, "```json")
-		text = strings.TrimPrefix(text, "```")
-		text = strings.TrimSuffix(text, "```")
-		text = strings.TrimSpace(text)
-	}
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start >= 0 && end >= start {
-		text = text[start : end+1]
-	}
-	return json.Unmarshal([]byte(text), target)
-}
 
 func mustJSON(value any) string {
 	data, err := json.Marshal(value)

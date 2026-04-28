@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/sukeke/agent-gogo/internal/contextbuilder"
+	"github.com/sukeke/agent-gogo/internal/textutil"
 )
 
 var ErrMemoryNotFound = errors.New("memory not found")
@@ -39,7 +40,7 @@ func NewIndex(items ...Item) *Index {
 }
 
 func (i *Index) Add(item Item) {
-	item.Tags = sortedUnique(item.Tags)
+	item.Tags = textutil.SortedUniqueStrings(item.Tags)
 	i.items[item.ID] = item
 }
 
@@ -89,24 +90,6 @@ func (item Item) ContextMemory() contextbuilder.MemoryItem {
 		Summary:     item.Summary,
 		ArtifactRef: item.ArtifactRef,
 	}
-}
-
-func sortedUnique(values []string) []string {
-	result := append([]string(nil), values...)
-	sort.Strings(result)
-	out := result[:0]
-	var previous string
-	for n, value := range result {
-		if n > 0 && value == previous {
-			continue
-		}
-		out = append(out, value)
-		previous = value
-	}
-	if out == nil {
-		return []string{}
-	}
-	return out
 }
 
 func tokenMatch(haystack string, query string) bool {

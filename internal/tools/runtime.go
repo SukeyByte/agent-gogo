@@ -12,20 +12,24 @@ import (
 	"strings"
 
 	"github.com/sukeke/agent-gogo/internal/domain"
+	"github.com/sukeke/agent-gogo/internal/observability"
 )
 
 var ErrToolNotFound = errors.New("tool not found")
+var ErrCapabilityBlocked = errors.New("tool capability blocked")
+var ErrConfirmationRequired = errors.New("tool confirmation required")
 
 type Store interface {
 	CreateToolCall(ctx context.Context, call domain.ToolCall) (domain.ToolCall, error)
 }
 
 type Spec struct {
-	Name         string
-	Description  string
-	RiskLevel    string
-	InputSchema  map[string]any
-	OutputSchema map[string]any
+	Name          string
+	Description   string
+	RiskLevel     string
+	InputSchema   map[string]any
+	OutputSchema  map[string]any
+	RequiresShell bool
 }
 
 type CallRequest struct {
@@ -49,10 +53,40 @@ type CallResponse struct {
 
 type Handler func(ctx context.Context, args map[string]any) (Result, error)
 
+type SecurityPolicy struct {
+	AllowedTools              map[string]bool
+	AllowShell                bool
+	RequireConfirmationAtRisk string
+}
+
+type ConfirmationRequest struct {
+	ToolName  string
+	RiskLevel string
+	Args      map[string]any
+}
+
+type ConfirmationGate interface {
+	Confirm(ctx context.Context, req ConfirmationRequest) (bool, error)
+}
+
+type AutoConfirmationGate struct {
+	Approved bool
+}
+
+func (g AutoConfirmationGate) Confirm(ctx context.Context, req ConfirmationRequest) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return g.Approved, nil
+}
+
 type Runtime struct {
-	store    Store
-	specs    map[string]Spec
-	handlers map[string]Handler
+	store            Store
+	specs            map[string]Spec
+	handlers         map[string]Handler
+	security         SecurityPolicy
+	confirmationGate ConfirmationGate
+	logger           observability.Logger
 }
 
 func NewRuntime(store Store) *Runtime {
@@ -60,6 +94,9 @@ func NewRuntime(store Store) *Runtime {
 		store:    store,
 		specs:    map[string]Spec{},
 		handlers: map[string]Handler{},
+		security: SecurityPolicy{
+			AllowShell: true,
+		},
 	}
 }
 
@@ -84,9 +121,10 @@ func NewBuiltinRuntime(store Store, root string) *Runtime {
 		}, nil
 	})
 	runtime.Register(Spec{
-		Name:        "test.run",
-		Description: "Run a configured test command.",
-		RiskLevel:   "medium",
+		Name:          "test.run",
+		Description:   "Run a configured test command.",
+		RiskLevel:     "medium",
+		RequiresShell: true,
 	}, func(ctx context.Context, args map[string]any) (Result, error) {
 		command, _ := args["command"].(string)
 		if command == "" {
@@ -125,12 +163,45 @@ func NewBuiltinRuntime(store Store, root string) *Runtime {
 			EvidenceRef: ref,
 		}, nil
 	})
+	runtime.Register(Spec{
+		Name:        "document.write",
+		Description: "Write a markdown document under the configured workspace root.",
+		RiskLevel:   "medium",
+	}, func(ctx context.Context, args map[string]any) (Result, error) {
+		output, err := writeArtifact(ctx, root, args)
+		if err != nil {
+			return Result{Success: false, Error: err.Error()}, err
+		}
+		ref, _ := output["artifact_ref"].(string)
+		return Result{Success: true, Output: output, EvidenceRef: ref}, nil
+	})
+	runtime.Register(Spec{
+		Name:        "memory.save",
+		Description: "Persist a compact project memory markdown artifact.",
+		RiskLevel:   "low",
+	}, func(ctx context.Context, args map[string]any) (Result, error) {
+		output, err := saveMemory(ctx, root, args)
+		if err != nil {
+			return Result{Success: false, Error: err.Error()}, err
+		}
+		ref, _ := output["memory_ref"].(string)
+		return Result{Success: true, Output: output, EvidenceRef: ref}, nil
+	})
 	return runtime
 }
 
 func (r *Runtime) Register(spec Spec, handler Handler) {
 	r.specs[spec.Name] = spec
 	r.handlers[spec.Name] = handler
+}
+
+func (r *Runtime) UseSecurityPolicy(policy SecurityPolicy, gate ConfirmationGate) {
+	r.security = policy
+	r.confirmationGate = gate
+}
+
+func (r *Runtime) UseLogger(logger observability.Logger) {
+	r.logger = logger
 }
 
 func (r *Runtime) ListSpecs() []Spec {
@@ -152,6 +223,11 @@ func (r *Runtime) Call(ctx context.Context, req CallRequest) (CallResponse, erro
 	if err != nil {
 		return CallResponse{}, err
 	}
+	r.log(ctx, "tool.call.request", map[string]any{
+		"attempt_id": req.AttemptID,
+		"name":       req.Name,
+		"args":       copyArgs(req.Args),
+	})
 
 	handler, ok := r.handlers[req.Name]
 	if !ok {
@@ -161,6 +237,15 @@ func (r *Runtime) Call(ctx context.Context, req CallRequest) (CallResponse, erro
 			return CallResponse{}, auditErr
 		}
 		return CallResponse{Result: result, ToolCall: call}, ErrToolNotFound
+	}
+	spec := r.specs[req.Name]
+	if err := r.resolveCapability(ctx, spec, req); err != nil {
+		result := Result{Success: false, Error: err.Error()}
+		call, auditErr := r.audit(ctx, req, inputJSON, result)
+		if auditErr != nil {
+			return CallResponse{}, auditErr
+		}
+		return CallResponse{Result: result, ToolCall: call}, err
 	}
 
 	result, handlerErr := handler(ctx, copyArgs(req.Args))
@@ -179,6 +264,32 @@ func (r *Runtime) Call(ctx context.Context, req CallRequest) (CallResponse, erro
 		return CallResponse{Result: result, ToolCall: call}, fmt.Errorf("tool %s failed: %s", req.Name, result.Error)
 	}
 	return CallResponse{Result: result, ToolCall: call}, nil
+}
+
+func (r *Runtime) resolveCapability(ctx context.Context, spec Spec, req CallRequest) error {
+	if r.security.AllowedTools != nil && !r.security.AllowedTools[req.Name] {
+		return fmt.Errorf("%w: %s is not allowed", ErrCapabilityBlocked, req.Name)
+	}
+	if spec.RequiresShell && !r.security.AllowShell {
+		return fmt.Errorf("%w: shell is disabled for %s", ErrCapabilityBlocked, req.Name)
+	}
+	if riskRequiresConfirmation(spec.RiskLevel, r.security.RequireConfirmationAtRisk) {
+		if r.confirmationGate == nil {
+			return fmt.Errorf("%w: %s", ErrConfirmationRequired, req.Name)
+		}
+		approved, err := r.confirmationGate.Confirm(ctx, ConfirmationRequest{
+			ToolName:  req.Name,
+			RiskLevel: spec.RiskLevel,
+			Args:      copyArgs(req.Args),
+		})
+		if err != nil {
+			return err
+		}
+		if !approved {
+			return fmt.Errorf("%w: %s rejected", ErrConfirmationRequired, req.Name)
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) audit(ctx context.Context, req CallRequest, inputJSON string, result Result) (domain.ToolCall, error) {
@@ -200,9 +311,37 @@ func (r *Runtime) audit(ctx context.Context, req CallRequest, inputJSON string, 
 		EvidenceRef: result.EvidenceRef,
 	}
 	if r.store == nil {
+		r.log(ctx, "tool.call.response", map[string]any{
+			"attempt_id":   call.AttemptID,
+			"name":         call.Name,
+			"status":       call.Status,
+			"error":        call.Error,
+			"evidence_ref": call.EvidenceRef,
+			"output":       result.Output,
+		})
 		return call, nil
 	}
-	return r.store.CreateToolCall(ctx, call)
+	created, err := r.store.CreateToolCall(ctx, call)
+	if err != nil {
+		return domain.ToolCall{}, err
+	}
+	r.log(ctx, "tool.call.response", map[string]any{
+		"id":           created.ID,
+		"attempt_id":   created.AttemptID,
+		"name":         created.Name,
+		"status":       created.Status,
+		"error":        created.Error,
+		"evidence_ref": created.EvidenceRef,
+		"output":       result.Output,
+	})
+	return created, nil
+}
+
+func (r *Runtime) log(ctx context.Context, stage string, payload any) {
+	if r.logger == nil {
+		return
+	}
+	_ = r.logger.Log(ctx, stage, payload)
 }
 
 func stableJSON(value any) (string, error) {
@@ -269,9 +408,9 @@ func searchCode(ctx context.Context, root string, args map[string]any) (map[stri
 				return nil
 			}
 			line, snippet := firstMatchingLine(string(data), lowerQuery)
-			rel, _ := filepath.Rel(root, path)
+			rel := artifactRef(root, path)
 			matches = append(matches, map[string]any{
-				"path":    filepath.ToSlash(rel),
+				"path":    rel,
 				"line":    line,
 				"snippet": snippet,
 			})
@@ -315,11 +454,54 @@ func writeArtifact(ctx context.Context, root string, args map[string]any) (map[s
 	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
 		return nil, err
 	}
-	rel, _ := filepath.Rel(root, target)
 	return map[string]any{
-		"artifact_ref": filepath.ToSlash(rel),
+		"artifact_ref": artifactRef(root, target),
 		"summary":      summary,
 		"bytes":        len([]byte(content)),
+	}, nil
+}
+
+func saveMemory(ctx context.Context, root string, args map[string]any) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	key, _ := args["key"].(string)
+	scope, _ := args["scope"].(string)
+	summary, _ := args["summary"].(string)
+	body, _ := args["body"].(string)
+	if strings.TrimSpace(key) == "" {
+		return nil, errors.New("memory key is required")
+	}
+	if strings.TrimSpace(summary) == "" {
+		return nil, errors.New("memory summary is required")
+	}
+	if strings.TrimSpace(body) == "" {
+		return nil, errors.New("memory body is required")
+	}
+	if strings.TrimSpace(scope) == "" {
+		scope = "project"
+	}
+	tags := stringSliceArg(args["tags"])
+	fileName := safeFileName(key) + ".md"
+	content := "# " + summary + "\n\n" +
+		"scope: " + scope + "\n" +
+		"tags: " + strings.Join(tags, ",") + "\n\n" +
+		body + "\n"
+	target, err := safeJoin(root, filepath.Join("memory", fileName))
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"memory_ref": artifactRef(root, target),
+		"scope":      scope,
+		"summary":    summary,
+		"bytes":      len([]byte(content)),
 	}, nil
 }
 
@@ -333,6 +515,62 @@ func safeJoin(root string, requested string) (string, error) {
 		return "", fmt.Errorf("path escapes workspace root: %s", requested)
 	}
 	return target, nil
+}
+
+func artifactRef(root string, target string) string {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return filepath.ToSlash(filepath.Clean(target))
+	}
+	rel, err := filepath.Rel(absRoot, target)
+	if err != nil {
+		return filepath.ToSlash(filepath.Clean(target))
+	}
+	return filepath.ToSlash(rel)
+}
+
+func riskRequiresConfirmation(toolRisk string, threshold string) bool {
+	if strings.TrimSpace(threshold) == "" {
+		return false
+	}
+	return riskRank(toolRisk) >= riskRank(threshold)
+}
+
+func riskRank(risk string) int {
+	switch strings.ToLower(strings.TrimSpace(risk)) {
+	case "critical":
+		return 4
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func safeFileName(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	var builder strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+		case r == '-' || r == '_':
+			builder.WriteRune(r)
+		default:
+			builder.WriteRune('-')
+		}
+	}
+	name := strings.Trim(builder.String(), "-")
+	if name == "" {
+		return "memory"
+	}
+	return name
 }
 
 func shouldSkipDir(name string) bool {

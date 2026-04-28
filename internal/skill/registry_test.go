@@ -51,3 +51,37 @@ Use go test and keep module boundaries clean.
 		t.Fatal("expected context instruction version hash")
 	}
 }
+
+func TestDiscoverPulledStorySkills(t *testing.T) {
+	root := filepath.Join("..", "..", ".claude", "skills")
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("story skills root missing: %v", err)
+	}
+	registry, err := Discover(context.Background(), root)
+	if err != nil {
+		t.Fatalf("discover pulled skills: %v", err)
+	}
+	cards, err := registry.Search(context.Background(), "", 10)
+	if err != nil {
+		t.Fatalf("search pulled skills: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, card := range cards {
+		seen[card.ID] = true
+		if strings.Contains(card.Description, "# Chapter Writing") {
+			t.Fatal("card should not contain full skill body")
+		}
+	}
+	for _, id := range []string{"chapter-writing", "plot-structure"} {
+		if !seen[id] {
+			t.Fatalf("expected pulled skill %q in local index, got %#v", id, seen)
+		}
+		pkg, err := registry.Load(context.Background(), id)
+		if err != nil {
+			t.Fatalf("load pulled skill %s: %v", id, err)
+		}
+		if strings.TrimSpace(pkg.Instructions) == "" {
+			t.Fatalf("expected pulled skill %s instructions", id)
+		}
+	}
+}

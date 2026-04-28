@@ -18,6 +18,7 @@ type Config struct {
 	Storage       StorageConfig
 	Runtime       RuntimeConfig
 	Communication CommunicationConfig
+	Security      SecurityConfig
 }
 
 type LLMConfig struct {
@@ -43,7 +44,11 @@ type BrowserConfig struct {
 }
 
 type StorageConfig struct {
-	SQLitePath string
+	SQLitePath   string
+	ArtifactPath string
+	LogPath      string
+	SkillRoots   []string
+	PersonaPath  string
 }
 
 type RuntimeConfig struct {
@@ -53,6 +58,11 @@ type RuntimeConfig struct {
 type CommunicationConfig struct {
 	ChannelID string
 	SessionID string
+}
+
+type SecurityConfig struct {
+	RequireConfirmHighRisk bool
+	AllowShell             bool
 }
 
 func Load(path string) (Config, error) {
@@ -82,6 +92,18 @@ func Load(path string) (Config, error) {
 	if cfg.Storage.SQLitePath == "" {
 		cfg.Storage.SQLitePath = "./data/agent.db"
 	}
+	if cfg.Storage.ArtifactPath == "" {
+		cfg.Storage.ArtifactPath = "./data/artifacts"
+	}
+	if cfg.Storage.LogPath == "" {
+		cfg.Storage.LogPath = "./logs"
+	}
+	if len(cfg.Storage.SkillRoots) == 0 {
+		cfg.Storage.SkillRoots = []string{".claude/skills"}
+	}
+	if cfg.Storage.PersonaPath == "" {
+		cfg.Storage.PersonaPath = "./personas"
+	}
 	if cfg.Communication.ChannelID == "" {
 		cfg.Communication.ChannelID = "cli"
 	}
@@ -110,7 +132,11 @@ func Default() Config {
 			Timeout:          60 * time.Second,
 		},
 		Storage: StorageConfig{
-			SQLitePath: "./data/agent.db",
+			SQLitePath:   "./data/agent.db",
+			ArtifactPath: "./data/artifacts",
+			LogPath:      "./logs",
+			SkillRoots:   []string{".claude/skills"},
+			PersonaPath:  "./personas",
 		},
 		Runtime: RuntimeConfig{
 			MaxTasksPerProject: 50,
@@ -118,6 +144,10 @@ func Default() Config {
 		Communication: CommunicationConfig{
 			ChannelID: "cli",
 			SessionID: "local",
+		},
+		Security: SecurityConfig{
+			RequireConfirmHighRisk: true,
+			AllowShell:             false,
 		},
 	}
 }
@@ -143,15 +173,21 @@ func applyYAMLFile(cfg *Config, path string) error {
 	defer file.Close()
 
 	var section string
+	var lastKey string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		raw := scanner.Text()
 		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "- ") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "- ") {
+			applyListValue(cfg, section, lastKey, expandValue(strings.TrimSpace(strings.TrimPrefix(line, "- "))))
 			continue
 		}
 		if !strings.HasPrefix(raw, " ") && strings.HasSuffix(line, ":") {
 			section = strings.TrimSuffix(line, ":")
+			lastKey = ""
 			continue
 		}
 		parts := strings.SplitN(line, ":", 2)
@@ -160,9 +196,16 @@ func applyYAMLFile(cfg *Config, path string) error {
 		}
 		key := strings.TrimSpace(parts[0])
 		value := expandValue(parts[1])
+		lastKey = key
 		applyKeyValue(cfg, section, key, value)
 	}
 	return scanner.Err()
+}
+
+func applyListValue(cfg *Config, section string, key string, value string) {
+	if section == "storage" && key == "skill_roots" && value != "" {
+		cfg.Storage.SkillRoots = append(cfg.Storage.SkillRoots, expandPath(value))
+	}
 }
 
 func applyKeyValue(cfg *Config, section string, key string, value string) {
@@ -214,8 +257,17 @@ func applyKeyValue(cfg *Config, section string, key string, value string) {
 			}
 		}
 	case "storage":
-		if key == "sqlite_path" {
+		switch key {
+		case "sqlite_path":
 			cfg.Storage.SQLitePath = value
+		case "artifact_path":
+			cfg.Storage.ArtifactPath = value
+		case "log_path":
+			cfg.Storage.LogPath = value
+		case "persona_path":
+			cfg.Storage.PersonaPath = value
+		case "skill_roots":
+			cfg.Storage.SkillRoots = splitList(value)
 		}
 	case "runtime":
 		if key == "max_tasks_per_project" {
@@ -229,6 +281,13 @@ func applyKeyValue(cfg *Config, section string, key string, value string) {
 			cfg.Communication.ChannelID = value
 		case "session_id":
 			cfg.Communication.SessionID = value
+		}
+	case "security":
+		switch key {
+		case "require_confirm_high_risk":
+			cfg.Security.RequireConfirmHighRisk = parseBool(value)
+		case "allow_shell":
+			cfg.Security.AllowShell = parseBool(value)
 		}
 	}
 }
@@ -257,6 +316,18 @@ func applyEnv(cfg *Config) {
 	if value := os.Getenv("AGENT_GOGO_SQLITE_PATH"); value != "" {
 		cfg.Storage.SQLitePath = value
 	}
+	if value := os.Getenv("AGENT_GOGO_ARTIFACT_PATH"); value != "" {
+		cfg.Storage.ArtifactPath = value
+	}
+	if value := os.Getenv("AGENT_GOGO_LOG_PATH"); value != "" {
+		cfg.Storage.LogPath = value
+	}
+	if value := os.Getenv("AGENT_GOGO_SKILL_ROOTS"); value != "" {
+		cfg.Storage.SkillRoots = splitList(value)
+	}
+	if value := os.Getenv("AGENT_GOGO_PERSONA_PATH"); value != "" {
+		cfg.Storage.PersonaPath = value
+	}
 	if value := os.Getenv("AGENT_GOGO_CHANNEL_ID"); value != "" {
 		cfg.Communication.ChannelID = value
 	}
@@ -283,6 +354,9 @@ func applyEnv(cfg *Config) {
 	if value := os.Getenv("AGENT_GOGO_BROWSER_USER_DATA_DIR"); value != "" {
 		cfg.Browser.UserDataDir = value
 	}
+	if value := os.Getenv("AGENT_GOGO_ALLOW_SHELL"); value != "" {
+		cfg.Security.AllowShell = parseBool(value)
+	}
 }
 
 func existingConfigPath() string {
@@ -297,7 +371,30 @@ func existingConfigPath() string {
 func expandValue(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.Trim(value, `"'`)
-	return os.ExpandEnv(value)
+	return expandPath(os.ExpandEnv(value))
+}
+
+func expandPath(value string) string {
+	if strings.HasPrefix(value, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(value, "~/"))
+		}
+	}
+	return value
+}
+
+func splitList(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';'
+	})
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = expandPath(strings.Trim(strings.TrimSpace(part), `"'`))
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
 }
 
 func parsePositiveInt(value string) (int, bool) {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sort"
 	"strings"
+
+	"github.com/sukeke/agent-gogo/internal/textutil"
 )
 
 var ErrNotFound = errors.New("function schema not found")
@@ -176,8 +178,8 @@ func containsString(values []string, target string) bool {
 }
 
 func normalizeSchema(schema Schema) Schema {
-	schema.Tags = sortedUnique(schema.Tags)
-	schema.TaskTypes = sortedUnique(schema.TaskTypes)
+	schema.Tags = textutil.SortedUniqueStrings(schema.Tags)
+	schema.TaskTypes = textutil.SortedUniqueStrings(schema.TaskTypes)
 	if schema.Provider == "" {
 		schema.Provider = "builtin"
 	}
@@ -190,24 +192,6 @@ func cloneSchema(schema Schema) Schema {
 	schema.InputSchema = copyMap(schema.InputSchema)
 	schema.OutputSchema = copyMap(schema.OutputSchema)
 	return schema
-}
-
-func sortedUnique(values []string) []string {
-	result := append([]string(nil), values...)
-	sort.Strings(result)
-	out := result[:0]
-	var previous string
-	for i, value := range result {
-		if i > 0 && value == previous {
-			continue
-		}
-		out = append(out, value)
-		previous = value
-	}
-	if out == nil {
-		return []string{}
-	}
-	return out
 }
 
 func defaultSchemas() []Schema {
@@ -286,6 +270,64 @@ func defaultSchemas() []Schema {
 				"type": "object",
 				"properties": map[string]any{
 					"artifact_ref": map[string]any{"type": "string"},
+				},
+			},
+		},
+		{
+			Name:          "document.write",
+			Description:   "Write a generated document artifact under the workspace artifact root.",
+			Tags:          []string{"artifact", "document", "write"},
+			TaskTypes:     []string{"document", "writing", "story", "runtime"},
+			RiskLevel:     "medium",
+			InputSummary:  "document path, markdown content, and summary",
+			OutputSummary: "document artifact reference",
+			Provider:      "builtin",
+			SchemaRef:     "fn:document.write@v1",
+			VersionHash:   "builtin-document-write-v1",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"path", "content"},
+				"properties": map[string]any{
+					"path":    map[string]any{"type": "string"},
+					"content": map[string]any{"type": "string"},
+					"summary": map[string]any{"type": "string"},
+				},
+			},
+			OutputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"artifact_ref": map[string]any{"type": "string"},
+					"bytes":        map[string]any{"type": "number"},
+				},
+			},
+		},
+		{
+			Name:          "memory.save",
+			Description:   "Persist key project memory as a compact markdown artifact.",
+			Tags:          []string{"memory", "write", "project"},
+			TaskTypes:     []string{"writing", "story", "runtime"},
+			RiskLevel:     "low",
+			InputSummary:  "memory key, scope, summary, body, and tags",
+			OutputSummary: "memory artifact reference",
+			Provider:      "builtin",
+			SchemaRef:     "fn:memory.save@v1",
+			VersionHash:   "builtin-memory-save-v1",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"key", "summary", "body"},
+				"properties": map[string]any{
+					"key":     map[string]any{"type": "string"},
+					"scope":   map[string]any{"type": "string"},
+					"summary": map[string]any{"type": "string"},
+					"body":    map[string]any{"type": "string"},
+					"tags":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				},
+			},
+			OutputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"memory_ref": map[string]any{"type": "string"},
+					"bytes":      map[string]any{"type": "number"},
 				},
 			},
 		},

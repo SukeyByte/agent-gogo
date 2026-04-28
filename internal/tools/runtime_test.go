@@ -146,3 +146,75 @@ func TestBuiltinRuntimeCodeSearch(t *testing.T) {
 		t.Fatalf("expected relative path, got %#v", matches[0]["path"])
 	}
 }
+
+func TestRuntimeBlocksShellWhenPolicyDisallowsIt(t *testing.T) {
+	ctx := context.Background()
+	runtime := NewBuiltinRuntime(nil, t.TempDir())
+	runtime.UseSecurityPolicy(SecurityPolicy{AllowShell: false}, nil)
+
+	response, err := runtime.Call(ctx, CallRequest{
+		Name: "test.run",
+		Args: map[string]any{"command": "go test ./..."},
+	})
+	if err == nil {
+		t.Fatal("expected blocked shell error")
+	}
+	if response.ToolCall.Status != domain.ToolCallStatusFailed {
+		t.Fatalf("expected failed audit, got %s", response.ToolCall.Status)
+	}
+	if !strings.Contains(response.ToolCall.Error, "shell is disabled") {
+		t.Fatalf("expected shell disabled error, got %q", response.ToolCall.Error)
+	}
+}
+
+func TestRuntimeRequiresConfirmationForHighRiskTool(t *testing.T) {
+	ctx := context.Background()
+	runtime := NewRuntime(nil)
+	runtime.Register(Spec{Name: "danger.run", RiskLevel: "high"}, func(ctx context.Context, args map[string]any) (Result, error) {
+		return Result{Success: true, Output: map[string]any{"ok": true}}, nil
+	})
+	runtime.UseSecurityPolicy(SecurityPolicy{
+		AllowShell:                true,
+		RequireConfirmationAtRisk: "high",
+	}, AutoConfirmationGate{Approved: false})
+
+	if _, err := runtime.Call(ctx, CallRequest{Name: "danger.run"}); err == nil {
+		t.Fatal("expected confirmation rejection")
+	}
+}
+
+func TestBuiltinRuntimeWritesDocumentAndMemory(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	runtime := NewBuiltinRuntime(nil, root)
+
+	doc, err := runtime.Call(ctx, CallRequest{
+		Name: "document.write",
+		Args: map[string]any{
+			"path":    "artifacts/story.md",
+			"content": "# Story\n",
+			"summary": "story draft",
+		},
+	})
+	if err != nil {
+		t.Fatalf("write document: %v", err)
+	}
+	if doc.Result.Output["artifact_ref"] != "artifacts/story.md" {
+		t.Fatalf("unexpected artifact ref %#v", doc.Result.Output)
+	}
+	mem, err := runtime.Call(ctx, CallRequest{
+		Name: "memory.save",
+		Args: map[string]any{
+			"key":     "story key points",
+			"summary": "Story key points",
+			"body":    "Detective, clue, reveal.",
+			"tags":    []any{"story", "mystery"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("save memory: %v", err)
+	}
+	if mem.Result.Output["memory_ref"] != "memory/story-key-points.md" {
+		t.Fatalf("unexpected memory ref %#v", mem.Result.Output)
+	}
+}

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sukeke/agent-gogo/internal/textutil"
 )
 
 const (
@@ -541,21 +543,7 @@ func normalizeRecentMessages(messages []Message, maxItems int) []stableMessage {
 }
 
 func sortedUniqueStrings(values []string) []string {
-	if len(values) == 0 {
-		return []string{}
-	}
-	result := append([]string(nil), values...)
-	sort.Strings(result)
-	out := result[:0]
-	var previous string
-	for i, value := range result {
-		if i > 0 && value == previous {
-			continue
-		}
-		out = append(out, value)
-		previous = value
-	}
-	return out
+	return textutil.SortedUniqueStrings(values)
 }
 
 func sortedKeyValues(values map[string]string) []keyValue {

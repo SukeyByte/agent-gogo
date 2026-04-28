@@ -6,7 +6,7 @@ The goal is not to build another chat wrapper. The goal is to build a recoverabl
 
 ## Status
 
-This project is in the design and scaffold stage. The current repository contains the product requirements, core design principles, and a minimal Go module that builds.
+This project is now a runnable runtime slice. The repository contains the PRD, architecture notes, durable SQLite task state, ContextBuilder, Chain Router, planner/validator/scheduler loop, browser and story executors, Tool Runtime, Communication Runtime, and JSONL observability logs.
 
 ## Core Idea
 
@@ -39,10 +39,12 @@ internal/app/          Application bootstrap surface
 docs/prd/              Product requirements
 docs/design/           Architecture and design notes
 configs/               Example configuration
-.claude/skills/        Project Claude-compatible skill packages
-personas/              Built-in or local persona definitions
+internal/demo/         Demo-only executors and examples
+internal/executor/     Generic executors such as BrowserExecutor and StoryExecutor
+.claude/skills/        Pulled Claude-compatible story skills indexed locally
 migrations/            SQLite migrations
-web/                   Future Web Console
+logs/                  Runtime JSONL logs, created locally
+data/artifacts/        Tool-created documents and memory files, created locally
 ```
 
 ## Development
@@ -51,6 +53,21 @@ web/                   Future Web Console
 go test ./...
 go run ./cmd/agent-gogo
 ```
+
+## CLI Flows
+
+```bash
+export DEEPSEEK_API_KEY="..."
+go run ./cmd/agent-gogo plan "目标"
+go run ./cmd/agent-gogo answer-url https://example.com "问题"
+go run ./cmd/agent-gogo write-story "我希望完成一个短篇推理小说的编写"
+```
+
+`write-story` uses DeepSeek through the provider interface, generates an ephemeral novelist persona at runtime, searches the local Claude-compatible `SKILL.md` index from `storage.skill_roots`, builds a ContextPack, writes the story via `document.write`, saves key points via `memory.save`, sends the final text to the configured channel, and writes chain/prompt/tool logs to `storage.log_path`.
+
+The repo includes two pulled upstream skills for the story acceptance flow: `chapter-writing` for prose generation and `plot-structure` for arc, timeline, and foreshadowing work.
+
+API keys are read from environment variables such as `DEEPSEEK_API_KEY` or `AGENT_GOGO_LLM_API_KEY`; do not commit real keys to config files.
 
 ## License
 

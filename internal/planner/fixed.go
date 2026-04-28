@@ -14,6 +14,7 @@ type PlanRequest struct {
 	UserInput     string
 	ChainDecision chain.Decision
 	IntentProfile intent.Profile
+	ContextText   string
 }
 
 type Planner interface {

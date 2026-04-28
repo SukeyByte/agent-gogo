@@ -257,6 +257,49 @@ M1 domain + store
   -> M4 function + tool minimal implementation
   -> M5 communication baseline
   -> M6 real capability integration
+  -> M7 story workflow integration
 ```
 
 M1 和 M3 是执行系统的骨架，必须保持简单、可测、可恢复。M2 决定后续 Function、Skill、Persona、Memory 是否能保持低成本和缓存友好。M4 和 M5 负责把能力调用和用户通讯从 Runtime Core 中解耦。M6 只在接口稳定后接入真实外部系统。
+
+---
+
+## M7：DAG + Context Assets + Story Workflow
+
+目标：把前六个里程碑中的薄模块串成符合 PRD 的端到端执行链路，先以“短篇推理小说编写”为验收场景，验证 DAG、Function Search、Skill、Persona、Memory、Tool Runtime、Communication 和日志事实源可以协同工作。
+
+当前状态：已实现主链路，并通过 `go test ./...`。DAG 依赖保存与调度、Runtime Context Assets、本地 `SKILL.md` 索引加载、运行时小说家 persona 生成、Tool Runtime 安全门禁、StoryExecutor、BrowserExecutor 抽象、demo 迁移、JSONL 日志、README/config 示例已同步。两个差异较大的 Claude-compatible story skills 已从线上拉取到 `.claude/skills`，真实验收运行仍依赖环境提供 DeepSeek API key。
+
+范围：
+
+1. 保存 Planner 返回的 `depends_on`，将其转为 `TaskDependency`，Scheduler 只选择依赖已 `DONE` 的 `READY` task。
+2. Runtime Service 在规划前接入 Function Search、Skill Search/Load、Persona Search/Load、Memory Search，并通过 `ContextBuilder` 生成稳定上下文。
+3. Tool Runtime 增加 Capability Resolver、安全策略和确认门禁；高风险工具必须经过 confirmation gate，shell 默认由配置显式允许。
+4. 将特定网页答案 demo 从通用 executor 层移出，保留为 demo/example；新增通用 BrowserExecutor 只负责浏览器证据采集。
+5. Skill 使用本地索引加载；本仓库只保留从线上拉取的 Claude Code / Claude-compatible `SKILL.md` 包，不手写创建。
+6. 新增小说工作流命令：输入用户目标后，由 agent 在运行时生成小说家 ephemeral persona，检索并加载本地 skill 索引，通过 function/tool 写入文档，将重点保存到 memory，并把最终内容发送到配置 channel。
+7. 所有链路阶段和 LLM 提示词必须写入日志文件夹，日志不得包含 API key。
+8. 同步 README、配置示例和里程碑状态。
+
+验收输入：
+
+```text
+我希望完成一个短篇推理小说的编写
+```
+
+验收标准：
+
+1. DeepSeek 通过 provider 接口接入，API key 只从 `DEEPSEEK_API_KEY` 或 `AGENT_GOGO_LLM_API_KEY` 注入，不写入仓库、日志或生成文档。
+2. Chain Router、Intent Analyzer、Function Search、Skill Search、Persona 创建/选择、Memory Search、ContextBuilder、Planner、Executor、Tool Runtime、Tester、Reviewer、Communication output 均有日志记录。
+3. 至少一个 active skill 来自本地索引中的 Claude Code / Claude-compatible `SKILL.md` package，且完整 skill body 只在激活时进入 ContextPack。
+4. Function Search 返回轻量 cards；只有 active functions 的 schema 进入 ContextPack。
+5. 小说正文通过 function/tool 写入 artifact 文档。
+6. 故事重点、人物关系、线索、伏笔和事实约束通过 memory tool 保存。
+7. Runtime Core 不直接写文件或发送消息；副作用经 Tool Runtime 或 Communication Runtime。
+8. `go test ./...` 通过。
+
+非目标：
+
+1. 不实现完整 Web Console 页面。
+2. 不实现通用长篇小说生产系统。
+3. 不把真实 API key 固化到配置文件或示例文件。

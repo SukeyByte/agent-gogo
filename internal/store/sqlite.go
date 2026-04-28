@@ -213,6 +213,35 @@ func (s *SQLiteStore) ListTasksByProject(ctx context.Context, projectID string) 
 	return tasks, rows.Err()
 }
 
+func (s *SQLiteStore) ListTaskDependenciesByProject(ctx context.Context, projectID string) ([]domain.TaskDependency, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT dependency.id, dependency.task_id, dependency.depends_on_task_id, dependency.created_at
+		FROM task_dependencies dependency
+		INNER JOIN tasks task ON task.id = dependency.task_id
+		WHERE task.project_id = ?
+		ORDER BY dependency.created_at, dependency.id
+	`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var dependencies []domain.TaskDependency
+	for rows.Next() {
+		var dependency domain.TaskDependency
+		var createdAt string
+		if err := rows.Scan(&dependency.ID, &dependency.TaskID, &dependency.DependsOnTaskID, &createdAt); err != nil {
+			return nil, err
+		}
+		dependency.CreatedAt, err = parseTime(createdAt)
+		if err != nil {
+			return nil, err
+		}
+		dependencies = append(dependencies, dependency)
+	}
+	return dependencies, rows.Err()
+}
+
 func (s *SQLiteStore) TransitionTask(ctx context.Context, taskID string, to domain.TaskStatus, message string) (domain.Task, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

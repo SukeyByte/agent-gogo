@@ -44,6 +44,12 @@ func Discover(ctx context.Context, roots ...string) (*Registry, error) {
 		if root == "" {
 			continue
 		}
+		if _, err := os.Stat(root); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
 		if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 			if err != nil {
 				return err
@@ -51,7 +57,7 @@ func Discover(ctx context.Context, roots ...string) (*Registry, error) {
 			if entry.IsDir() || entry.Name() != "SKILL.md" {
 				return nil
 			}
-			card, err := parseCard(path)
+			card, err := parseCard(ctx, path)
 			if err != nil {
 				return err
 			}
@@ -97,7 +103,7 @@ func (r *Registry) Load(ctx context.Context, id string) (Package, error) {
 	if !ok {
 		return Package{}, ErrSkillNotFound
 	}
-	body, frontmatter, err := readSkill(card.Path)
+	body, frontmatter, err := readSkill(ctx, card.Path)
 	if err != nil {
 		return Package{}, err
 	}
@@ -114,26 +120,26 @@ func (pkg Package) ContextInstruction() contextbuilder.SkillInstruction {
 	}
 }
 
-func parseCard(path string) (Card, error) {
-	body, frontmatter, err := readSkill(path)
+func parseCard(ctx context.Context, path string) (Card, error) {
+	body, frontmatter, err := readSkill(ctx, path)
 	if err != nil {
 		return Card{}, err
 	}
 	name := frontmatter["name"]
 	if name == "" {
-		name = filepath.Base(filepath.Dir(path))
+		name = skillID(path)
 	}
 	description := frontmatter["description"]
 	if description == "" {
 		description = firstLine(body)
 	}
 	allowedTools := parseList(frontmatter["allowed-tools"])
-	hash, err := fileHash(path)
+	hash, err := fileHash(ctx, path)
 	if err != nil {
 		return Card{}, err
 	}
 	return Card{
-		ID:           filepath.Base(filepath.Dir(path)),
+		ID:           skillID(path),
 		Name:         name,
 		Description:  description,
 		AllowedTools: allowedTools,
@@ -142,8 +148,8 @@ func parseCard(path string) (Card, error) {
 	}, nil
 }
 
-func readSkill(path string) (string, map[string]string, error) {
-	data, err := os.ReadFile(path)
+func readSkill(ctx context.Context, path string) (string, map[string]string, error) {
+	data, err := readSkillBytes(ctx, path)
 	if err != nil {
 		return "", nil, err
 	}
@@ -191,13 +197,25 @@ func parseList(value string) []string {
 	return out
 }
 
-func fileHash(path string) (string, error) {
-	data, err := os.ReadFile(path)
+func fileHash(ctx context.Context, path string) (string, error) {
+	data, err := readSkillBytes(ctx, path)
 	if err != nil {
 		return "", err
 	}
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:]), nil
+}
+
+func readSkillBytes(ctx context.Context, path string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(path)
+}
+
+func skillID(path string) string {
+	path = strings.TrimRight(path, "/")
+	return filepath.Base(filepath.Dir(path))
 }
 
 func firstLine(text string) string {

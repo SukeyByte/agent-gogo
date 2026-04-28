@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/sukeke/agent-gogo/internal/chain"
 	"github.com/sukeke/agent-gogo/internal/contextbuilder"
 	"github.com/sukeke/agent-gogo/internal/provider"
+	"github.com/sukeke/agent-gogo/internal/textutil"
 )
 
 type Profile struct {
@@ -84,8 +84,8 @@ func (p Profile) ContextProfile() contextbuilder.IntentProfile {
 }
 
 func normalizeProfile(profile Profile) Profile {
-	profile.Domains = sortedUnique(profile.Domains)
-	profile.RequiredCapabilities = sortedUnique(profile.RequiredCapabilities)
+	profile.Domains = textutil.SortedUniqueStrings(profile.Domains)
+	profile.RequiredCapabilities = textutil.SortedUniqueStrings(profile.RequiredCapabilities)
 	profile.RiskLevel = strings.ToLower(profile.RiskLevel)
 	return profile
 }
@@ -94,22 +94,6 @@ const intentSystemPrompt = `You are the Intent Analyzer for agent-gogo.
 Return only one JSON object with:
 task_type, complexity, domains, required_capabilities, risk_level, needs_user_confirmation, grounding_requirement, confidence.
 Keep the answer small and do not include tool schemas. Do not include markdown.`
-
-func decodeJSONObject(text string, target any) error {
-	text = strings.TrimSpace(text)
-	if strings.HasPrefix(text, "```") {
-		text = strings.TrimPrefix(text, "```json")
-		text = strings.TrimPrefix(text, "```")
-		text = strings.TrimSuffix(text, "```")
-		text = strings.TrimSpace(text)
-	}
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start >= 0 && end >= start {
-		text = text[start : end+1]
-	}
-	return json.Unmarshal([]byte(text), target)
-}
 
 func decodeProfileJSONObject(text string, target *Profile) error {
 	var wire struct {
@@ -122,7 +106,7 @@ func decodeProfileJSONObject(text string, target *Profile) error {
 		GroundingRequirement  any `json:"grounding_requirement"`
 		Confidence            any `json:"confidence"`
 	}
-	if err := decodeJSONObject(text, &wire); err != nil {
+	if err := textutil.DecodeJSONObject(text, &wire); err != nil {
 		return err
 	}
 	*target = Profile{
@@ -220,22 +204,4 @@ func floatValue(value any) float64 {
 	default:
 		return 0
 	}
-}
-
-func sortedUnique(values []string) []string {
-	result := append([]string(nil), values...)
-	sort.Strings(result)
-	out := result[:0]
-	var previous string
-	for i, value := range result {
-		if i > 0 && value == previous {
-			continue
-		}
-		out = append(out, value)
-		previous = value
-	}
-	if out == nil {
-		return []string{}
-	}
-	return out
 }

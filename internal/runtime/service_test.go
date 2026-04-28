@@ -6,7 +6,13 @@ import (
 
 	"github.com/sukeke/agent-gogo/internal/communication"
 	"github.com/sukeke/agent-gogo/internal/domain"
+	"github.com/sukeke/agent-gogo/internal/executor"
+	"github.com/sukeke/agent-gogo/internal/planner"
+	"github.com/sukeke/agent-gogo/internal/reviewer"
+	"github.com/sukeke/agent-gogo/internal/scheduler"
 	"github.com/sukeke/agent-gogo/internal/store"
+	"github.com/sukeke/agent-gogo/internal/tester"
+	"github.com/sukeke/agent-gogo/internal/validator"
 )
 
 func TestServiceRunsMinimalRuntimeLoop(t *testing.T) {
@@ -125,4 +131,73 @@ func TestServiceEmitsCommunicationIntents(t *testing.T) {
 	if messages[2].Type != communication.IntentNotifyDone {
 		t.Fatalf("expected web notify_done message, got %s", messages[2].Type)
 	}
+}
+
+func TestServicePersistsPlannerDependenciesAndSchedulerHonorsDAG(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	service := NewServiceWithComponents(
+		sqlite,
+		dependencyPlanner{},
+		validator.NewMinimalTaskValidator(),
+		scheduler.NewReadyScheduler(sqlite),
+		executor.NewMinimalExecutor(sqlite),
+		tester.NewMinimalTester(sqlite),
+		reviewer.NewMinimalReviewer(sqlite),
+	)
+	project, err := service.CreateProject(ctx, CreateProjectRequest{
+		Name: "DAG",
+		Goal: "Run tasks in dependency order",
+	})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if _, err := service.PlanProject(ctx, project.ID); err != nil {
+		t.Fatalf("plan project: %v", err)
+	}
+
+	first, err := service.RunNextTask(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("run first task: %v", err)
+	}
+	if first.Task.Title != "Outline mystery" {
+		t.Fatalf("expected dependency task first, got %q", first.Task.Title)
+	}
+	second, err := service.RunNextTask(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("run second task: %v", err)
+	}
+	if second.Task.Title != "Write mystery" {
+		t.Fatalf("expected dependent task second, got %q", second.Task.Title)
+	}
+}
+
+type dependencyPlanner struct{}
+
+func (p dependencyPlanner) PlanProject(ctx context.Context, req planner.PlanRequest) ([]domain.Task, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return []domain.Task{
+		{
+			ProjectID:          req.Project.ID,
+			Title:              "Outline mystery",
+			Description:        "Create the clue map",
+			Status:             domain.TaskStatusDraft,
+			AcceptanceCriteria: []string{"outline exists"},
+		},
+		{
+			ProjectID:          req.Project.ID,
+			Title:              "Write mystery",
+			Description:        "Write the short story",
+			Status:             domain.TaskStatusDraft,
+			AcceptanceCriteria: []string{"story exists"},
+			DependsOn:          []string{"Outline mystery"},
+		},
+	}, nil
 }
