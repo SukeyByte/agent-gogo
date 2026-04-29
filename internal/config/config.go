@@ -44,15 +44,17 @@ type BrowserConfig struct {
 }
 
 type StorageConfig struct {
-	SQLitePath   string
-	ArtifactPath string
-	LogPath      string
-	SkillRoots   []string
-	PersonaPath  string
+	WorkspacePath string
+	SQLitePath    string
+	ArtifactPath  string
+	LogPath       string
+	SkillRoots    []string
+	PersonaPath   string
 }
 
 type RuntimeConfig struct {
 	MaxTasksPerProject int
+	TestCommand        string
 }
 
 type CommunicationConfig struct {
@@ -63,6 +65,7 @@ type CommunicationConfig struct {
 type SecurityConfig struct {
 	RequireConfirmHighRisk bool
 	AllowShell             bool
+	ShellAllowlist         []string
 }
 
 func Load(path string) (Config, error) {
@@ -92,6 +95,9 @@ func Load(path string) (Config, error) {
 	if cfg.Storage.SQLitePath == "" {
 		cfg.Storage.SQLitePath = "./data/agent.db"
 	}
+	if cfg.Storage.WorkspacePath == "" {
+		cfg.Storage.WorkspacePath = "."
+	}
 	if cfg.Storage.ArtifactPath == "" {
 		cfg.Storage.ArtifactPath = "./data/artifacts"
 	}
@@ -109,6 +115,9 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.Communication.SessionID == "" {
 		cfg.Communication.SessionID = "local"
+	}
+	if strings.TrimSpace(cfg.Runtime.TestCommand) == "" {
+		cfg.Runtime.TestCommand = "go test ./..."
 	}
 	return cfg, nil
 }
@@ -132,14 +141,16 @@ func Default() Config {
 			Timeout:          60 * time.Second,
 		},
 		Storage: StorageConfig{
-			SQLitePath:   "./data/agent.db",
-			ArtifactPath: "./data/artifacts",
-			LogPath:      "./logs",
-			SkillRoots:   []string{".claude/skills"},
-			PersonaPath:  "./personas",
+			WorkspacePath: ".",
+			SQLitePath:    "./data/agent.db",
+			ArtifactPath:  "./data/artifacts",
+			LogPath:       "./logs",
+			SkillRoots:    []string{".claude/skills"},
+			PersonaPath:   "./personas",
 		},
 		Runtime: RuntimeConfig{
 			MaxTasksPerProject: 50,
+			TestCommand:        "go test ./...",
 		},
 		Communication: CommunicationConfig{
 			ChannelID: "cli",
@@ -148,6 +159,7 @@ func Default() Config {
 		Security: SecurityConfig{
 			RequireConfirmHighRisk: true,
 			AllowShell:             false,
+			ShellAllowlist:         []string{"go test", "go build", "go run", "git status", "git diff"},
 		},
 	}
 }
@@ -206,6 +218,9 @@ func applyListValue(cfg *Config, section string, key string, value string) {
 	if section == "storage" && key == "skill_roots" && value != "" {
 		cfg.Storage.SkillRoots = append(cfg.Storage.SkillRoots, expandPath(value))
 	}
+	if section == "security" && key == "shell_allowlist" && value != "" {
+		cfg.Security.ShellAllowlist = append(cfg.Security.ShellAllowlist, value)
+	}
 }
 
 func applyKeyValue(cfg *Config, section string, key string, value string) {
@@ -258,6 +273,8 @@ func applyKeyValue(cfg *Config, section string, key string, value string) {
 		}
 	case "storage":
 		switch key {
+		case "workspace_path":
+			cfg.Storage.WorkspacePath = value
 		case "sqlite_path":
 			cfg.Storage.SQLitePath = value
 		case "artifact_path":
@@ -270,10 +287,13 @@ func applyKeyValue(cfg *Config, section string, key string, value string) {
 			cfg.Storage.SkillRoots = splitList(value)
 		}
 	case "runtime":
-		if key == "max_tasks_per_project" {
+		switch key {
+		case "max_tasks_per_project":
 			if maxTasks, ok := parsePositiveInt(value); ok {
 				cfg.Runtime.MaxTasksPerProject = maxTasks
 			}
+		case "test_command":
+			cfg.Runtime.TestCommand = value
 		}
 	case "communication":
 		switch key {
@@ -288,6 +308,8 @@ func applyKeyValue(cfg *Config, section string, key string, value string) {
 			cfg.Security.RequireConfirmHighRisk = parseBool(value)
 		case "allow_shell":
 			cfg.Security.AllowShell = parseBool(value)
+		case "shell_allowlist":
+			cfg.Security.ShellAllowlist = splitList(value)
 		}
 	}
 }
@@ -315,6 +337,9 @@ func applyEnv(cfg *Config) {
 	}
 	if value := os.Getenv("AGENT_GOGO_SQLITE_PATH"); value != "" {
 		cfg.Storage.SQLitePath = value
+	}
+	if value := os.Getenv("AGENT_GOGO_WORKSPACE_PATH"); value != "" {
+		cfg.Storage.WorkspacePath = value
 	}
 	if value := os.Getenv("AGENT_GOGO_ARTIFACT_PATH"); value != "" {
 		cfg.Storage.ArtifactPath = value
@@ -356,6 +381,12 @@ func applyEnv(cfg *Config) {
 	}
 	if value := os.Getenv("AGENT_GOGO_ALLOW_SHELL"); value != "" {
 		cfg.Security.AllowShell = parseBool(value)
+	}
+	if value := os.Getenv("AGENT_GOGO_SHELL_ALLOWLIST"); value != "" {
+		cfg.Security.ShellAllowlist = splitList(value)
+	}
+	if value := os.Getenv("AGENT_GOGO_TEST_COMMAND"); value != "" {
+		cfg.Runtime.TestCommand = value
 	}
 }
 

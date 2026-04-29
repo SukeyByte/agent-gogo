@@ -137,11 +137,17 @@ type SkillPackageRef struct {
 }
 
 type MemoryItem struct {
-	ID          string
-	Scope       string
-	VersionHash string
-	Summary     string
-	ArtifactRef string
+	ID              string
+	Scope           string
+	Type            string
+	Tags            []string
+	VersionHash     string
+	Summary         string
+	ArtifactRef     string
+	EvidenceRef     string
+	SourceTaskID    string
+	SourceAttemptID string
+	Confidence      float64
 }
 
 type ProjectState struct {
@@ -150,15 +156,94 @@ type ProjectState struct {
 	Goal    string
 	Status  string
 	Summary string
+	Digest  ProjectDigest
 }
 
 type TaskState struct {
-	ID             string
-	Goal           string
-	Status         string
-	AttemptCount   int
-	CacheVersion   string
-	FrozenRevision string
+	ID                  string
+	Title               string
+	Goal                string
+	Status              string
+	Description         string
+	AttemptCount        int
+	DependsOn           []TaskLink
+	Blocks              []TaskLink
+	SiblingStatusCounts []StatusCount
+	RecentAttempts      []AttemptSummary
+	RecentObservations  []EvidenceSummary
+	RecentFailures      []string
+	CacheVersion        string
+	FrozenRevision      string
+}
+
+type ProjectDigest struct {
+	TaskCount      int
+	StatusCounts   []StatusCount
+	CompletedTasks []TaskSummary
+	ActiveTasks    []TaskSummary
+	ProblemTasks   []TaskSummary
+	RecentEvents   []EventSummary
+	RecentEvidence []EvidenceSummary
+	Decisions      []DecisionRecord
+}
+
+type StatusCount struct {
+	Status string
+	Count  int
+}
+
+type TaskSummary struct {
+	ID                string
+	Title             string
+	Status            string
+	Description       string
+	AttemptCount      int
+	DependsOn         []TaskLink
+	Blocks            []TaskLink
+	LatestObservation string
+	LatestEvidenceRef string
+	LatestFailure     string
+}
+
+type TaskLink struct {
+	ID     string
+	Title  string
+	Status string
+}
+
+type EventSummary struct {
+	TaskID    string
+	TaskTitle string
+	AttemptID string
+	Type      string
+	FromState string
+	ToState   string
+	Message   string
+}
+
+type EvidenceSummary struct {
+	ID          string
+	TaskID      string
+	TaskTitle   string
+	Type        string
+	Summary     string
+	EvidenceRef string
+}
+
+type DecisionRecord struct {
+	TaskID      string
+	TaskTitle   string
+	AttemptID   string
+	Status      string
+	Summary     string
+	EvidenceRef string
+}
+
+type AttemptSummary struct {
+	ID     string
+	Number int
+	Status string
+	Error  string
 }
 
 type AcceptanceCriterion struct {

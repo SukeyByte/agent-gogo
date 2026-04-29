@@ -27,6 +27,7 @@ communication:
   session_id: "local"
 
 storage:
+  workspace_path: "."
   sqlite_path: "./data/agent.db"
   artifact_path: "./data/artifacts"
   log_path: "./logs"
@@ -36,6 +37,7 @@ storage:
 
 runtime:
   max_tasks_per_project: 50
+  test_command: "go test ./..."
   max_retries: 3
   token_budget: 32000
   enable_prompt_cache: true
@@ -44,3 +46,9 @@ runtime:
 security:
   require_confirm_high_risk: true
   allow_shell: false
+  shell_allowlist:
+    - "go test"
+    - "go build"
+    - "go run"
+    - "git status"
+    - "git diff"

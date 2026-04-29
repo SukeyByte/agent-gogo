@@ -195,7 +195,7 @@ func cloneSchema(schema Schema) Schema {
 }
 
 func defaultSchemas() []Schema {
-	return []Schema{
+	schemas := []Schema{
 		{
 			Name:          "code.search",
 			Description:   "Search indexed source files for relevant symbols or text.",
@@ -332,4 +332,48 @@ func defaultSchemas() []Schema {
 			},
 		},
 	}
+	return append(schemas, engineeringSchemas()...)
+}
+
+func engineeringSchemas() []Schema {
+	names := []struct {
+		name        string
+		description string
+		tags        []string
+		taskTypes   []string
+		risk        string
+		input       string
+		output      string
+	}{
+		{"code.index", "Build a lightweight repository map and symbol index.", []string{"code", "index", "repository"}, []string{"code", "runtime"}, "low", "optional max file and output limits", "files, languages, and symbols"},
+		{"code.symbols", "Search indexed source symbols by query or path.", []string{"code", "symbols", "search"}, []string{"code", "runtime"}, "low", "query, path, and limit", "matching symbols"},
+		{"file.read", "Read a file inside the workspace root.", []string{"file", "read", "workspace"}, []string{"code", "document", "runtime"}, "low", "workspace relative file path", "file content"},
+		{"file.write", "Write a file inside the workspace root.", []string{"file", "write", "workspace"}, []string{"code", "document", "runtime"}, "medium", "workspace relative path and content", "written path and byte count"},
+		{"file.patch", "Apply a small old/new text replacement to a workspace file.", []string{"file", "patch", "workspace"}, []string{"code", "runtime"}, "medium", "path, old text, new text", "patched path and replacement count"},
+		{"file.diff", "Return git diff for the workspace or a path.", []string{"file", "diff", "git"}, []string{"code", "runtime"}, "low", "optional path", "diff text"},
+		{"shell.run", "Run an allowlisted shell command in the workspace.", []string{"shell", "command", "test"}, []string{"code", "runtime"}, "medium", "allowlisted command", "exit status and output"},
+		{"git.status", "Return git status --short.", []string{"git", "status"}, []string{"code", "runtime"}, "low", "none", "status text"},
+		{"git.diff", "Return git diff.", []string{"git", "diff"}, []string{"code", "runtime"}, "low", "optional path", "diff text"},
+		{"git.branch", "Create or checkout a git branch.", []string{"git", "branch"}, []string{"code", "runtime"}, "medium", "branch name and create/checkout mode", "branch operation summary"},
+		{"git.commit", "Create a git commit from staged changes.", []string{"git", "commit"}, []string{"code", "runtime"}, "high", "commit message", "commit summary"},
+		{"git.rollback", "Restore one explicit workspace path.", []string{"git", "rollback"}, []string{"code", "runtime"}, "high", "workspace relative path", "restore summary"},
+	}
+	result := make([]Schema, 0, len(names))
+	for _, item := range names {
+		result = append(result, Schema{
+			Name:          item.name,
+			Description:   item.description,
+			Tags:          item.tags,
+			TaskTypes:     item.taskTypes,
+			RiskLevel:     item.risk,
+			InputSummary:  item.input,
+			OutputSummary: item.output,
+			Provider:      "builtin",
+			SchemaRef:     "fn:" + item.name + "@v1",
+			VersionHash:   "builtin-" + strings.ReplaceAll(item.name, ".", "-") + "-v1",
+			InputSchema:   map[string]any{"type": "object"},
+			OutputSchema:  map[string]any{"type": "object"},
+		})
+	}
+	return result
 }

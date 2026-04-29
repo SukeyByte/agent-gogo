@@ -102,6 +102,37 @@ func (s *SQLiteStore) GetProject(ctx context.Context, id string) (domain.Project
 	return project, nil
 }
 
+func (s *SQLiteStore) ListProjects(ctx context.Context) ([]domain.Project, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, goal, status, created_at, updated_at
+		FROM projects
+		ORDER BY updated_at DESC, created_at DESC, id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var projects []domain.Project
+	for rows.Next() {
+		var project domain.Project
+		var createdAt, updatedAt string
+		if err := rows.Scan(&project.ID, &project.Name, &project.Goal, &project.Status, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		project.CreatedAt, err = parseTime(createdAt)
+		if err != nil {
+			return nil, err
+		}
+		project.UpdatedAt, err = parseTime(updatedAt)
+		if err != nil {
+			return nil, err
+		}
+		projects = append(projects, project)
+	}
+	return projects, rows.Err()
+}
+
 func (s *SQLiteStore) CreateTask(ctx context.Context, task domain.Task) (domain.Task, error) {
 	now := utcNow()
 	if task.ID == "" {
@@ -385,6 +416,29 @@ func (s *SQLiteStore) GetTaskAttempt(ctx context.Context, attemptID string) (dom
 	return getTaskAttemptTx(ctx, tx, attemptID)
 }
 
+func (s *SQLiteStore) ListTaskAttemptsByTask(ctx context.Context, taskID string) ([]domain.TaskAttempt, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, task_id, number, status, started_at, ended_at, error
+		FROM task_attempts
+		WHERE task_id = ?
+		ORDER BY number, id
+	`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var attempts []domain.TaskAttempt
+	for rows.Next() {
+		attempt, err := scanTaskAttempt(rows)
+		if err != nil {
+			return nil, err
+		}
+		attempts = append(attempts, attempt)
+	}
+	return attempts, rows.Err()
+}
+
 func (s *SQLiteStore) AddTaskEvent(ctx context.Context, event domain.TaskEvent) (domain.TaskEvent, error) {
 	if event.ID == "" {
 		event.ID = newID()
@@ -460,6 +514,40 @@ func (s *SQLiteStore) CreateToolCall(ctx context.Context, call domain.ToolCall) 
 	return call, nil
 }
 
+func (s *SQLiteStore) ListToolCallsByAttempt(ctx context.Context, attemptID string) ([]domain.ToolCall, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, attempt_id, name, input_json, output_json, status, error, evidence_ref, created_at, updated_at
+		FROM tool_calls
+		WHERE attempt_id = ?
+		ORDER BY created_at, id
+	`, attemptID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var calls []domain.ToolCall
+	for rows.Next() {
+		var call domain.ToolCall
+		var createdAt, updatedAt string
+		if err := rows.Scan(&call.ID, &call.AttemptID, &call.Name, &call.InputJSON, &call.OutputJSON, &call.Status, &call.Error, &call.EvidenceRef, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		parsedCreatedAt, err := parseTime(createdAt)
+		if err != nil {
+			return nil, err
+		}
+		parsedUpdatedAt, err := parseTime(updatedAt)
+		if err != nil {
+			return nil, err
+		}
+		call.CreatedAt = parsedCreatedAt
+		call.UpdatedAt = parsedUpdatedAt
+		calls = append(calls, call)
+	}
+	return calls, rows.Err()
+}
+
 func (s *SQLiteStore) CreateObservation(ctx context.Context, observation domain.Observation) (domain.Observation, error) {
 	if observation.ID == "" {
 		observation.ID = newID()
@@ -533,6 +621,35 @@ func (s *SQLiteStore) CreateTestResult(ctx context.Context, result domain.TestRe
 	return result, nil
 }
 
+func (s *SQLiteStore) ListTestResultsByAttempt(ctx context.Context, attemptID string) ([]domain.TestResult, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, attempt_id, name, status, output, evidence_ref, created_at
+		FROM test_results
+		WHERE attempt_id = ?
+		ORDER BY created_at, id
+	`, attemptID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []domain.TestResult
+	for rows.Next() {
+		var result domain.TestResult
+		var createdAt string
+		if err := rows.Scan(&result.ID, &result.AttemptID, &result.Name, &result.Status, &result.Output, &result.EvidenceRef, &createdAt); err != nil {
+			return nil, err
+		}
+		parsedCreatedAt, err := parseTime(createdAt)
+		if err != nil {
+			return nil, err
+		}
+		result.CreatedAt = parsedCreatedAt
+		results = append(results, result)
+	}
+	return results, rows.Err()
+}
+
 func (s *SQLiteStore) CreateReviewResult(ctx context.Context, result domain.ReviewResult) (domain.ReviewResult, error) {
 	if result.ID == "" {
 		result.ID = newID()
@@ -551,6 +668,35 @@ func (s *SQLiteStore) CreateReviewResult(ctx context.Context, result domain.Revi
 	return result, nil
 }
 
+func (s *SQLiteStore) ListReviewResultsByAttempt(ctx context.Context, attemptID string) ([]domain.ReviewResult, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, attempt_id, status, summary, evidence_ref, created_at
+		FROM review_results
+		WHERE attempt_id = ?
+		ORDER BY created_at, id
+	`, attemptID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []domain.ReviewResult
+	for rows.Next() {
+		var result domain.ReviewResult
+		var createdAt string
+		if err := rows.Scan(&result.ID, &result.AttemptID, &result.Status, &result.Summary, &result.EvidenceRef, &createdAt); err != nil {
+			return nil, err
+		}
+		parsedCreatedAt, err := parseTime(createdAt)
+		if err != nil {
+			return nil, err
+		}
+		result.CreatedAt = parsedCreatedAt
+		results = append(results, result)
+	}
+	return results, rows.Err()
+}
+
 func (s *SQLiteStore) CreateArtifact(ctx context.Context, artifact domain.Artifact) (domain.Artifact, error) {
 	if artifact.ID == "" {
 		artifact.ID = newID()
@@ -567,6 +713,35 @@ func (s *SQLiteStore) CreateArtifact(ctx context.Context, artifact domain.Artifa
 		return domain.Artifact{}, err
 	}
 	return artifact, nil
+}
+
+func (s *SQLiteStore) ListArtifactsByProject(ctx context.Context, projectID string) ([]domain.Artifact, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, COALESCE(attempt_id, ''), COALESCE(project_id, ''), type, path, description, created_at
+		FROM artifacts
+		WHERE project_id = ?
+		ORDER BY created_at, id
+	`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var artifacts []domain.Artifact
+	for rows.Next() {
+		var artifact domain.Artifact
+		var createdAt string
+		if err := rows.Scan(&artifact.ID, &artifact.AttemptID, &artifact.ProjectID, &artifact.Type, &artifact.Path, &artifact.Description, &createdAt); err != nil {
+			return nil, err
+		}
+		parsedCreatedAt, err := parseTime(createdAt)
+		if err != nil {
+			return nil, err
+		}
+		artifact.CreatedAt = parsedCreatedAt
+		artifacts = append(artifacts, artifact)
+	}
+	return artifacts, rows.Err()
 }
 
 func getTaskTx(ctx context.Context, tx *sql.Tx, id string) (domain.Task, error) {
@@ -596,21 +771,29 @@ func getTaskTx(ctx context.Context, tx *sql.Tx, id string) (domain.Task, error) 
 }
 
 func getTaskAttemptTx(ctx context.Context, tx *sql.Tx, id string) (domain.TaskAttempt, error) {
-	var attempt domain.TaskAttempt
-	var startedAt string
-	var endedAt sql.NullString
-	err := tx.QueryRowContext(ctx, `
+	return scanTaskAttempt(tx.QueryRowContext(ctx, `
 		SELECT id, task_id, number, status, started_at, ended_at, error
 		FROM task_attempts
 		WHERE id = ?
-	`, id).Scan(&attempt.ID, &attempt.TaskID, &attempt.Number, &attempt.Status, &startedAt, &endedAt, &attempt.Error)
+	`, id))
+}
+
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTaskAttempt(row scanner) (domain.TaskAttempt, error) {
+	var attempt domain.TaskAttempt
+	var startedAt string
+	var endedAt sql.NullString
+	if err := row.Scan(&attempt.ID, &attempt.TaskID, &attempt.Number, &attempt.Status, &startedAt, &endedAt, &attempt.Error); err != nil {
+		return domain.TaskAttempt{}, err
+	}
+	parsedStartedAt, err := parseTime(startedAt)
 	if err != nil {
 		return domain.TaskAttempt{}, err
 	}
-	attempt.StartedAt, err = parseTime(startedAt)
-	if err != nil {
-		return domain.TaskAttempt{}, err
-	}
+	attempt.StartedAt = parsedStartedAt
 	if endedAt.Valid {
 		parsedEndedAt, err := parseTime(endedAt.String)
 		if err != nil {

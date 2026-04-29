@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -167,6 +168,44 @@ func TestRuntimeBlocksShellWhenPolicyDisallowsIt(t *testing.T) {
 	}
 }
 
+func TestRuntimeBlocksShellWhenCommandNotAllowlisted(t *testing.T) {
+	ctx := context.Background()
+	runtime := NewBuiltinRuntime(nil, t.TempDir())
+	runtime.UseSecurityPolicy(SecurityPolicy{AllowShell: true, ShellAllowlist: []string{"go test"}}, nil)
+
+	response, err := runtime.Call(ctx, CallRequest{
+		Name: "shell.run",
+		Args: map[string]any{"command": "rm -rf ."},
+	})
+	if err == nil {
+		t.Fatal("expected allowlist error")
+	}
+	if response.ToolCall.Status != domain.ToolCallStatusFailed {
+		t.Fatalf("expected failed audit, got %s", response.ToolCall.Status)
+	}
+	if !strings.Contains(response.ToolCall.Error, "not allowlisted") {
+		t.Fatalf("expected allowlist error, got %q", response.ToolCall.Error)
+	}
+}
+
+func TestBuiltinRuntimeShellRunDoesNotInvokeShellExpansion(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	runtime := NewBuiltinRuntime(nil, root)
+	runtime.UseSecurityPolicy(SecurityPolicy{AllowShell: true, ShellAllowlist: []string{"echo"}}, nil)
+
+	_, err := runtime.Call(ctx, CallRequest{
+		Name: "shell.run",
+		Args: map[string]any{"command": "echo ok > marker.txt"},
+	})
+	if err != nil {
+		t.Fatalf("run echo: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "marker.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected shell redirection not to create marker, stat err=%v", err)
+	}
+}
+
 func TestRuntimeRequiresConfirmationForHighRiskTool(t *testing.T) {
 	ctx := context.Background()
 	runtime := NewRuntime(nil)
@@ -180,6 +219,92 @@ func TestRuntimeRequiresConfirmationForHighRiskTool(t *testing.T) {
 
 	if _, err := runtime.Call(ctx, CallRequest{Name: "danger.run"}); err == nil {
 		t.Fatal("expected confirmation rejection")
+	}
+}
+
+func TestBuiltinRuntimeFileAndCodeTools(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	runtime := NewBuiltinRuntime(nil, root)
+	_, err := runtime.Call(ctx, CallRequest{
+		Name: "file.write",
+		Args: map[string]any{
+			"path":    "internal/sample.go",
+			"content": "package internal\n\ntype Widget struct{}\n\nfunc BuildWidget() {}\n",
+		},
+	})
+	if err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	read, err := runtime.Call(ctx, CallRequest{
+		Name: "file.read",
+		Args: map[string]any{"path": "internal/sample.go"},
+	})
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if !strings.Contains(read.Result.Output["content"].(string), "BuildWidget") {
+		t.Fatalf("expected content, got %#v", read.Result.Output)
+	}
+	symbols, err := runtime.Call(ctx, CallRequest{
+		Name: "code.symbols",
+		Args: map[string]any{"query": "BuildWidget"},
+	})
+	if err != nil {
+		t.Fatalf("code symbols: %v", err)
+	}
+	if symbols.Result.Output["count"].(int) != 1 {
+		t.Fatalf("expected one symbol, got %#v", symbols.Result.Output)
+	}
+	patch, err := runtime.Call(ctx, CallRequest{
+		Name: "file.patch",
+		Args: map[string]any{"path": "internal/sample.go", "old": "BuildWidget", "new": "MakeWidget"},
+	})
+	if err != nil {
+		t.Fatalf("patch file: %v", err)
+	}
+	if patch.Result.Output["replacements"].(int) != 1 {
+		t.Fatalf("expected one replacement, got %#v", patch.Result.Output)
+	}
+}
+
+func TestBuiltinRuntimeBlocksGitInternalsForFileTools(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	runtime := NewBuiltinRuntime(nil, root)
+
+	_, err := runtime.Call(ctx, CallRequest{
+		Name: "file.write",
+		Args: map[string]any{"path": ".git/config", "content": "bad"},
+	})
+	if err == nil {
+		t.Fatal("expected .git path to be blocked")
+	}
+}
+
+func TestBuiltinRuntimeFileDiffShowsUntrackedFile(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	init := execCommand(t, root, "git", "init")
+	if !strings.Contains(init, "Initialized") && !strings.Contains(init, "Reinitialized") {
+		t.Fatalf("unexpected git init output: %s", init)
+	}
+	runtime := NewBuiltinRuntime(nil, root)
+	if _, err := runtime.Call(ctx, CallRequest{
+		Name: "file.write",
+		Args: map[string]any{"path": "site/index.html", "content": "<h1>苏柯宇</h1>\n"},
+	}); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
+	diff, err := runtime.Call(ctx, CallRequest{
+		Name: "file.diff",
+		Args: map[string]any{"path": "site/index.html"},
+	})
+	if err != nil {
+		t.Fatalf("diff untracked file: %v", err)
+	}
+	if !strings.Contains(diff.Result.Output["diff"].(string), "+<h1>苏柯宇</h1>") {
+		t.Fatalf("expected added-file diff, got %#v", diff.Result.Output)
 	}
 }
 
@@ -217,4 +342,15 @@ func TestBuiltinRuntimeWritesDocumentAndMemory(t *testing.T) {
 	if mem.Result.Output["memory_ref"] != "memory/story-key-points.md" {
 		t.Fatalf("unexpected memory ref %#v", mem.Result.Output)
 	}
+}
+
+func execCommand(t *testing.T, dir string, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	data, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, string(data))
+	}
+	return string(data)
 }

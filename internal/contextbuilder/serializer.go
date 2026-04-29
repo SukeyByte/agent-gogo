@@ -260,20 +260,29 @@ type keyValue struct {
 }
 
 type stableProjectState struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Goal    string `json:"goal"`
-	Status  string `json:"status"`
-	Summary string `json:"summary"`
+	ID      string        `json:"id"`
+	Name    string        `json:"name"`
+	Goal    string        `json:"goal"`
+	Status  string        `json:"status"`
+	Summary string        `json:"summary"`
+	Digest  ProjectDigest `json:"digest"`
 }
 
 type stableTaskState struct {
-	Goal           string `json:"goal"`
-	Status         string `json:"status"`
-	AttemptCount   int    `json:"attempt_count"`
-	ID             string `json:"id"`
-	CacheVersion   string `json:"cache_version"`
-	FrozenRevision string `json:"frozen_revision"`
+	Goal                string            `json:"goal"`
+	Status              string            `json:"status"`
+	AttemptCount        int               `json:"attempt_count"`
+	ID                  string            `json:"id"`
+	Title               string            `json:"title"`
+	Description         string            `json:"description"`
+	DependsOn           []TaskLink        `json:"depends_on"`
+	Blocks              []TaskLink        `json:"blocks"`
+	SiblingStatusCounts []StatusCount     `json:"sibling_status_counts"`
+	RecentAttempts      []AttemptSummary  `json:"recent_attempts"`
+	RecentObservations  []EvidenceSummary `json:"recent_observations"`
+	RecentFailures      []string          `json:"recent_failures"`
+	CacheVersion        string            `json:"cache_version"`
+	FrozenRevision      string            `json:"frozen_revision"`
 }
 
 type stableEvidenceRef struct {
@@ -357,17 +366,26 @@ func normalizeProjectState(state ProjectState) stableProjectState {
 		Goal:    state.Goal,
 		Status:  state.Status,
 		Summary: state.Summary,
+		Digest:  normalizeProjectDigest(state.Digest),
 	}
 }
 
 func normalizeTaskState(state TaskState) stableTaskState {
 	return stableTaskState{
-		Goal:           state.Goal,
-		Status:         state.Status,
-		AttemptCount:   state.AttemptCount,
-		ID:             state.ID,
-		CacheVersion:   state.CacheVersion,
-		FrozenRevision: state.FrozenRevision,
+		Goal:                state.Goal,
+		Status:              state.Status,
+		AttemptCount:        state.AttemptCount,
+		ID:                  state.ID,
+		Title:               state.Title,
+		Description:         state.Description,
+		DependsOn:           normalizeTaskLinks(state.DependsOn),
+		Blocks:              normalizeTaskLinks(state.Blocks),
+		SiblingStatusCounts: normalizeStatusCounts(state.SiblingStatusCounts),
+		RecentAttempts:      normalizeAttemptSummaries(state.RecentAttempts),
+		RecentObservations:  normalizeEvidenceSummaries(state.RecentObservations),
+		RecentFailures:      sortedUniqueStrings(state.RecentFailures),
+		CacheVersion:        state.CacheVersion,
+		FrozenRevision:      state.FrozenRevision,
 	}
 }
 
@@ -448,11 +466,102 @@ func normalizeSkillPackageRefs(skills []SkillPackageRef) []SkillPackageRef {
 
 func normalizeMemoryItems(memories []MemoryItem) []MemoryItem {
 	result := append([]MemoryItem(nil), memories...)
+	for i := range result {
+		result[i].Tags = sortedUniqueStrings(result[i].Tags)
+	}
 	sort.SliceStable(result, func(i, j int) bool {
 		return compareStrings(result[i].ID, result[j].ID, result[i].VersionHash, result[j].VersionHash)
 	})
 	return uniqueBy(result, func(item MemoryItem) string {
 		return item.ID + "\x00" + item.VersionHash
+	})
+}
+
+func normalizeProjectDigest(digest ProjectDigest) ProjectDigest {
+	digest.StatusCounts = normalizeStatusCounts(digest.StatusCounts)
+	digest.CompletedTasks = normalizeTaskSummaries(digest.CompletedTasks)
+	digest.ActiveTasks = normalizeTaskSummaries(digest.ActiveTasks)
+	digest.ProblemTasks = normalizeTaskSummaries(digest.ProblemTasks)
+	digest.RecentEvents = normalizeEventSummaries(digest.RecentEvents)
+	digest.RecentEvidence = normalizeEvidenceSummaries(digest.RecentEvidence)
+	digest.Decisions = normalizeDecisionRecords(digest.Decisions)
+	return digest
+}
+
+func normalizeStatusCounts(counts []StatusCount) []StatusCount {
+	result := append([]StatusCount(nil), counts...)
+	sort.SliceStable(result, func(i, j int) bool {
+		return compareStrings(result[i].Status, result[j].Status)
+	})
+	return uniqueBy(result, func(item StatusCount) string {
+		return item.Status
+	})
+}
+
+func normalizeTaskSummaries(tasks []TaskSummary) []TaskSummary {
+	result := append([]TaskSummary(nil), tasks...)
+	for i := range result {
+		result[i].DependsOn = normalizeTaskLinks(result[i].DependsOn)
+		result[i].Blocks = normalizeTaskLinks(result[i].Blocks)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		return compareStrings(result[i].Status, result[j].Status, result[i].Title, result[j].Title, result[i].ID, result[j].ID)
+	})
+	return uniqueBy(result, func(item TaskSummary) string {
+		return item.ID
+	})
+}
+
+func normalizeTaskLinks(links []TaskLink) []TaskLink {
+	result := append([]TaskLink(nil), links...)
+	sort.SliceStable(result, func(i, j int) bool {
+		return compareStrings(result[i].Title, result[j].Title, result[i].ID, result[j].ID)
+	})
+	return uniqueBy(result, func(item TaskLink) string {
+		return item.ID
+	})
+}
+
+func normalizeEventSummaries(events []EventSummary) []EventSummary {
+	result := append([]EventSummary(nil), events...)
+	sort.SliceStable(result, func(i, j int) bool {
+		return compareStrings(result[i].TaskTitle, result[j].TaskTitle, result[i].AttemptID, result[j].AttemptID, result[i].Type, result[j].Type, result[i].Message, result[j].Message)
+	})
+	return uniqueBy(result, func(item EventSummary) string {
+		return strings.Join([]string{item.TaskID, item.AttemptID, item.Type, item.Message}, "\x00")
+	})
+}
+
+func normalizeEvidenceSummaries(evidence []EvidenceSummary) []EvidenceSummary {
+	result := append([]EvidenceSummary(nil), evidence...)
+	sort.SliceStable(result, func(i, j int) bool {
+		return compareStrings(result[i].TaskTitle, result[j].TaskTitle, result[i].Type, result[j].Type, result[i].ID, result[j].ID)
+	})
+	return uniqueBy(result, func(item EvidenceSummary) string {
+		return item.ID + "\x00" + item.EvidenceRef
+	})
+}
+
+func normalizeDecisionRecords(decisions []DecisionRecord) []DecisionRecord {
+	result := append([]DecisionRecord(nil), decisions...)
+	sort.SliceStable(result, func(i, j int) bool {
+		return compareStrings(result[i].TaskTitle, result[j].TaskTitle, result[i].AttemptID, result[j].AttemptID, result[i].Status, result[j].Status)
+	})
+	return uniqueBy(result, func(item DecisionRecord) string {
+		return strings.Join([]string{item.TaskID, item.AttemptID, item.Status, item.Summary}, "\x00")
+	})
+}
+
+func normalizeAttemptSummaries(attempts []AttemptSummary) []AttemptSummary {
+	result := append([]AttemptSummary(nil), attempts...)
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Number != result[j].Number {
+			return result[i].Number < result[j].Number
+		}
+		return result[i].ID < result[j].ID
+	})
+	return uniqueBy(result, func(item AttemptSummary) string {
+		return item.ID
 	})
 }
 

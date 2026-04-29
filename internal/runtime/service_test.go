@@ -2,11 +2,14 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/sukeke/agent-gogo/internal/communication"
+	"github.com/sukeke/agent-gogo/internal/contextbuilder"
 	"github.com/sukeke/agent-gogo/internal/domain"
 	"github.com/sukeke/agent-gogo/internal/executor"
+	"github.com/sukeke/agent-gogo/internal/memory"
 	"github.com/sukeke/agent-gogo/internal/planner"
 	"github.com/sukeke/agent-gogo/internal/reviewer"
 	"github.com/sukeke/agent-gogo/internal/scheduler"
@@ -177,6 +180,103 @@ func TestServicePersistsPlannerDependenciesAndSchedulerHonorsDAG(t *testing.T) {
 	}
 }
 
+func TestServiceInjectsTaskAwarenessAndAutoMemoryIntoNextTask(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	recorder := &contextRecordingExecutor{store: sqlite}
+	service := NewServiceWithComponents(
+		sqlite,
+		dependencyPlanner{},
+		validator.NewMinimalTaskValidator(),
+		scheduler.NewReadyScheduler(sqlite),
+		recorder,
+		tester.NewMinimalTester(sqlite),
+		reviewer.NewMinimalReviewer(sqlite),
+	)
+	service.UseContextAssets(nil, nil, nil, memory.NewIndex(), contextbuilder.NewSerializer(contextbuilder.SerializerOptions{}), nil)
+	project, err := service.CreateProject(ctx, CreateProjectRequest{
+		Name: "W9",
+		Goal: "Run tasks with task awareness",
+	})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if _, err := service.PlanProject(ctx, project.ID); err != nil {
+		t.Fatalf("plan project: %v", err)
+	}
+
+	first, err := service.RunNextTask(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("run first task: %v", err)
+	}
+	if first.Task.Title != "Outline mystery" {
+		t.Fatalf("expected first dependency task, got %s", first.Task.Title)
+	}
+	second, err := service.RunNextTask(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("run second task: %v", err)
+	}
+	if second.Task.Title != "Write mystery" {
+		t.Fatalf("expected second task, got %s", second.Task.Title)
+	}
+	secondContext := recorder.contexts[second.Task.ID]
+	for _, expected := range []string{"\"project_state\"", "\"task_state\"", "\"depends_on\"", "Outline mystery", "\"relevant_memories\"", "Task completed"} {
+		if !strings.Contains(secondContext, expected) {
+			t.Fatalf("expected second task context to contain %q:\n%s", expected, secondContext)
+		}
+	}
+}
+
+func TestServiceRetriesFailedTaskThroughRuntimeAPI(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	service := NewService(sqlite)
+	project, err := sqlite.CreateProject(ctx, domain.Project{Name: "retry", Goal: "retry failed task"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task, err := sqlite.CreateTask(ctx, domain.Task{
+		ProjectID:          project.ID,
+		Title:              "Fail once",
+		AcceptanceCriteria: []string{"retry moves task back to ready"},
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	ready, err := sqlite.TransitionTask(ctx, task.ID, domain.TaskStatusReady, "ready")
+	if err != nil {
+		t.Fatalf("ready task: %v", err)
+	}
+	inProgress, err := sqlite.TransitionTask(ctx, ready.ID, domain.TaskStatusInProgress, "start")
+	if err != nil {
+		t.Fatalf("start task: %v", err)
+	}
+	failed, err := sqlite.TransitionTask(ctx, inProgress.ID, domain.TaskStatusFailed, "failed")
+	if err != nil {
+		t.Fatalf("fail task: %v", err)
+	}
+	if err := service.RetryTask(ctx, failed.ID); err != nil {
+		t.Fatalf("retry task: %v", err)
+	}
+	retried, err := sqlite.GetTask(ctx, failed.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if retried.Status != domain.TaskStatusReady {
+		t.Fatalf("expected ready after retry, got %s", retried.Status)
+	}
+}
+
 type dependencyPlanner struct{}
 
 func (p dependencyPlanner) PlanProject(ctx context.Context, req planner.PlanRequest) ([]domain.Task, error) {
@@ -200,4 +300,44 @@ func (p dependencyPlanner) PlanProject(ctx context.Context, req planner.PlanRequ
 			DependsOn:          []string{"Outline mystery"},
 		},
 	}, nil
+}
+
+type contextRecordingExecutor struct {
+	store    executor.Store
+	contexts map[string]string
+}
+
+func (e *contextRecordingExecutor) UseRuntimeContext(projectID string, contextText string) {
+	if e.contexts == nil {
+		e.contexts = map[string]string{}
+	}
+	e.contexts[projectID] = contextText
+}
+
+func (e *contextRecordingExecutor) Execute(ctx context.Context, task domain.Task) (executor.Result, error) {
+	if e.contexts == nil {
+		e.contexts = map[string]string{}
+	}
+	e.contexts[task.ID] = e.contexts[task.ProjectID]
+	inProgress, err := e.store.TransitionTask(ctx, task.ID, domain.TaskStatusInProgress, "recording executor started task")
+	if err != nil {
+		return executor.Result{}, err
+	}
+	attempt, err := e.store.CreateTaskAttempt(ctx, task.ID)
+	if err != nil {
+		return executor.Result{}, err
+	}
+	if _, err := e.store.CreateObservation(ctx, domain.Observation{
+		AttemptID:   attempt.ID,
+		Type:        "executor.summary",
+		Summary:     "Recorded runtime context for " + task.Title,
+		EvidenceRef: "context://" + task.ID,
+	}); err != nil {
+		return executor.Result{}, err
+	}
+	implemented, err := e.store.TransitionTask(ctx, inProgress.ID, domain.TaskStatusImplemented, "recording executor completed task")
+	if err != nil {
+		return executor.Result{}, err
+	}
+	return executor.Result{Task: implemented, Attempt: attempt}, nil
 }

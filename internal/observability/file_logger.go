@@ -25,7 +25,7 @@ func NewFileLogger(dir string, prefix string) (*FileLogger, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	name := prefix + "-" + time.Now().UTC().Format("20060102T150405.000000Z") + ".jsonl"
+	name := prefix + "-" + time.Now().UTC().Format("20060102T150405.000000Z") + ".json"
 	return &FileLogger{path: filepath.Join(dir, name)}, nil
 }
 

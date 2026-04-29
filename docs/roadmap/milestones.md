@@ -258,6 +258,8 @@ M1 domain + store
   -> M5 communication baseline
   -> M6 real capability integration
   -> M7 story workflow integration
+  -> M8 code runtime + engineering tools
+  -> W9 task awareness + generic agent memory
 ```
 
 M1 和 M3 是执行系统的骨架，必须保持简单、可测、可恢复。M2 决定后续 Function、Skill、Persona、Memory 是否能保持低成本和缓存友好。M4 和 M5 负责把能力调用和用户通讯从 Runtime Core 中解耦。M6 只在接口稳定后接入真实外部系统。
@@ -303,3 +305,108 @@ M1 和 M3 是执行系统的骨架，必须保持简单、可测、可恢复。M
 1. 不实现完整 Web Console 页面。
 2. 不实现通用长篇小说生产系统。
 3. 不把真实 API key 固化到配置文件或示例文件。
+
+---
+
+## M8：Code Runtime + Engineering Tools
+
+目标：在不破坏 Runtime Core 稳定边界的前提下，补齐“理解仓库、修改文件、运行测试、失败修复、Git 隔离”的信息工程能力，让 agent-gogo 可以参与自身代码迭代，并用“苏柯宇个人网页”作为真实端到端验收任务。
+
+当前状态：已实现并通过本地验证。Code Runtime、工程工具、真实测试反馈、薄 Repair loop、README/config 同步和个人网页验收命令已落地；个人网页部署产物已写入 `web/dist/sukeyu` 并通过本地 HTTP 请求验证。
+
+范围：
+
+1. 新增 Code Runtime 薄实现：遍历 workspace 构建 repo map，提供文件摘要、语言统计和简单符号索引。
+2. 扩展 Function Catalog / Tool Runtime：
+   - `code.index`：生成仓库地图与符号摘要。
+   - `code.symbols`：按文件或 query 返回函数、类型、结构体等符号。
+   - `file.read`：读取 workspace 内文件。
+   - `file.write`：写入 workspace 内文件，受路径安全策略约束。
+   - `file.diff`：返回文件或目录的 git diff。
+   - `file.patch`：对 workspace 文件应用受控补丁。
+   - `shell.run`：仅在 config 显式允许且命令匹配 allowlist 时执行。
+   - `git.branch`、`git.diff`、`git.status`、`git.commit`、`git.rollback`：提供基础 Git 集成，其中回滚必须安全受限。
+3. 改造测试反馈：新增真实 `CommandTester`，通过 Tool Runtime 执行测试命令并根据退出结果生成 PASSED / FAILED。
+4. Repair / Replan 薄闭环：测试失败或 reviewer 驳回时生成关联原任务的 fix task，并把失败证据写入 task event。
+5. 同步配置：增加 workspace root、artifact root、shell allowlist、默认测试命令、Git 工具开关示例。
+6. 同步 README：说明 M8 工程工具和验证命令。
+7. 用 M8 工具完成一个静态站点任务：生成“苏柯宇”的个人网页，构建到部署目录，并完成本地静态部署验证。
+
+验收输入：
+
+```text
+为苏柯宇写一个个人网页并完成部署
+```
+
+验收标准：
+
+1. Runtime 可以通过 `code.index` 和 `code.symbols` 读取当前仓库结构。
+2. 文件副作用只能通过 Tool Runtime 的 file tools 发生，并限制在 workspace root 内。
+3. Shell 执行默认关闭；开启后也只能运行 allowlist 命令。
+4. 测试执行使用真实命令结果，失败时 Tester 标记 FAILED 并生成可追踪证据。
+5. Repair / Replan 至少能在失败时创建 fix task 并保留失败输出。
+6. Git 工具能读取 status / diff，并能在允许时创建隔离分支；危险回滚不自动执行。
+7. 个人网页源码、部署产物和验证日志均可追踪；本地部署可被 HTTP 请求验证。
+8. `go test ./...` 通过。
+
+非目标：
+
+1. 不实现完整 LSP/gopls 级别语义分析。
+2. 不实现跨语言精准引用图。
+3. 不自动执行破坏性 Git 回滚或强制提交。
+4. 不接入外部部署平台凭据；M8 的部署验收以仓库内静态部署目录和本地 HTTP 验证为准。
+
+---
+
+## W9：Task Awareness + Generic Agent Memory
+
+目标：补齐 agent-gogo 的任务感知能力，让通用 Agent 在规划、执行、测试、评审和修复时都能理解“项目进行到哪里了、已经知道了什么、之前为什么失败或调整”，而不是只看到当前孤立任务。
+
+当前状态：已实现并通过本地测试。W9 在 M8 的工程工具基础上增加项目级事实摘要、自动记忆提升、自动记忆检索和决策追溯，并注入 ContextBuilder 的 L2 层，供所有工作流复用。
+
+范围：
+
+1. 新增 Project Digest：
+   - 汇总项目目标、任务状态计数、DAG 依赖位置、已完成任务、失败/阻塞任务、最近事件、观察、测试、评审和 artifact/tool evidence。
+   - 在 `PlanProject` 与 `RunNextTask` 前生成确定性摘要，写入 ContextPack L2 的 `ProjectState`。
+2. 新增 Task Awareness：
+   - 当前任务上下文包含依赖任务、被依赖任务、兄弟任务状态、尝试次数、最近失败/修复原因和前序观察摘要。
+   - Executor 获取的 Runtime Context 自动包含这些信息。
+3. 自动 Memory 提取：
+   - Reviewer 通过后，从 TaskEvent、Observation、ToolCall、TestResult、ReviewResult 中提取低风险项目记忆。
+   - 记忆记录来源 TaskID / AttemptID / EvidenceRef，形成可追溯链。
+4. 自动 Memory 检索：
+   - ContextBuilder 组装前，根据 IntentProfile、Project Digest 和当前任务摘要检索相关 Memory。
+   - 自动加载的 Memory 进入 `RelevantMemories`，并保持稳定排序和可缓存性。
+5. 决策追溯：
+   - Reviewer 通过/驳回、Tester 失败、Repair 生成等事件被提升为 decision/failure/repair 类型记忆候选。
+6. 通用化要求：
+   - 不绑定 story、web、code 任一特定工作流。
+   - 不让 Executor 绕过 Runtime/Store/ContextBuilder 直接拼接全局状态。
+7. CLI 入口通用化：
+   - `agent-gogo` 主入口只接自然语言目标，不暴露 story / personal-site / plan 等显式演示命令。
+   - 演示工作流可以保留为内部 demo/workflow 函数，由 Runtime 根据用户目标自动路由。
+
+验收输入：
+
+```text
+运行一个至少两步的项目：第一步产生观察或决策，第二步执行前 ContextPack 必须能看到第一步的 digest 和自动 memory。
+```
+
+验收标准：
+
+1. `go test ./...` 通过。
+2. `ProjectState` L2 中包含结构化 `digest`，并能回答完成数量、失败数量、当前卡点、最近证据。
+3. `TaskState` L2 中包含当前任务 DAG 位置、依赖、被依赖、兄弟任务和最近尝试摘要。
+4. 成功任务完成后自动生成至少一条 project scope memory，并记录 source task / attempt / evidence。
+5. 下一次规划或执行前可以检索到自动生成的 memory，并注入 `RelevantMemories`。
+6. Repair / Reviewer / Tester 的失败或驳回信息能进入 digest，并在后续上下文中可见。
+7. 所有新增摘要由既有事实源确定性生成，不引入当前时间、随机 ID 或 LLM 自由改写。
+8. 用户可以直接运行 `agent-gogo "为苏柯宇写一个个人网页并完成部署"`，不需要记忆或输入显式子命令。
+
+非目标：
+
+1. 不实现向量数据库。
+2. 不实现长期跨仓库用户画像。
+3. 不把所有历史原文塞进上下文；只注入摘要、证据引用和可追溯 memory。
+4. 不引入新的外部服务。

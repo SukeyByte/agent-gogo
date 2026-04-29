@@ -59,6 +59,7 @@ var taskTransitions = map[TaskStatus]map[TaskStatus]struct{}{
 	},
 	TaskStatusNeedUserInput: {
 		TaskStatusReady:     {},
+		TaskStatusBlocked:   {},
 		TaskStatusCancelled: {},
 	},
 	TaskStatusReviewFailed: {
