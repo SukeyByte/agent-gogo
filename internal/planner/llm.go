@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/sukeke/agent-gogo/internal/domain"
 	"github.com/sukeke/agent-gogo/internal/llmjson"
+	"github.com/sukeke/agent-gogo/internal/prompts"
 	"github.com/sukeke/agent-gogo/internal/provider"
 	"github.com/sukeke/agent-gogo/internal/textutil"
 )
@@ -44,6 +46,9 @@ func (p *LLMPlanner) PlanProject(ctx context.Context, req PlanRequest) ([]domain
 	}
 	if len(output.Tasks) == 0 {
 		return nil, errors.New("planner returned no tasks")
+	}
+	if maxTasks := maxTasksForRequest(req); len(output.Tasks) > maxTasks {
+		return nil, fmt.Errorf("planner returned %d tasks, above max %d for this request", len(output.Tasks), maxTasks)
 	}
 	output.Tasks = ensureResearchAndReflectionTasks(req, output.Tasks)
 
@@ -86,16 +91,7 @@ type plannedTask struct {
 	Acceptance  []string `json:"acceptance"`
 }
 
-const plannerSystemPrompt = `You are the Planner for agent-gogo.
-Return only JSON with this shape:
-{"tasks":[{"title":"...","goal":"...","description":"...","type":"code|browser|document|runtime|general","depends_on":[],"acceptance":["..."]}]}
-Rules:
-- Planner only creates DRAFT task content.
-- Each task must have a clear title, goal, type, dependencies by title, and acceptance criteria.
-- Do not combine execution, testing, and review into one acceptance-free task.
-- For medium, high, project, code, web, or unfamiliar tasks, first create a research/context-gathering task and then a reflection task that validates the decomposition and acceptance criteria before implementation.
-- For browser tasks, require visible page text, DOM summary, user-facing content, and evidence URL; do not require raw HTML or HTTP status unless the user explicitly asks for them.
-- Do not include markdown.`
+var plannerSystemPrompt = prompts.Text("planner")
 
 func ensureResearchAndReflectionTasks(req PlanRequest, planned []plannedTask) []plannedTask {
 	if !needsResearchAndReflection(req) {
@@ -193,6 +189,17 @@ func needsResearchAndReflection(req PlanRequest) bool {
 		}
 	}
 	return false
+}
+
+func maxTasksForRequest(req PlanRequest) int {
+	text := strings.ToLower(strings.Join([]string{req.IntentProfile.Complexity, req.IntentProfile.TaskType, req.Project.Goal, req.UserInput}, " "))
+	if req.ChainDecision.Level == "L3" || strings.Contains(text, "high") || strings.Contains(text, "complex") || strings.Contains(text, "project") || strings.Contains(text, "项目") {
+		return 15
+	}
+	if strings.Contains(text, "medium") || strings.Contains(text, "planned") || strings.Contains(text, "中等") {
+		return 7
+	}
+	return 3
 }
 
 func hasTaskMatching(tasks []plannedTask, markers []string) bool {

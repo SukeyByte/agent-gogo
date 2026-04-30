@@ -148,6 +148,32 @@ func TestBuiltinRuntimeCodeSearch(t *testing.T) {
 	}
 }
 
+func TestBuiltinRuntimeCachesCodeIndexAcrossSymbolLookup(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc cachedSymbol() {}\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	runtime := NewBuiltinRuntime(nil, root)
+	first, err := runtime.Call(ctx, CallRequest{Name: "code.index", Args: map[string]any{"max_files": 20}})
+	if err != nil {
+		t.Fatalf("code.index: %v", err)
+	}
+	if first.Result.Output["cache_hit"] != false {
+		t.Fatalf("expected first index call to miss cache, got %#v", first.Result.Output["cache_hit"])
+	}
+	second, err := runtime.Call(ctx, CallRequest{Name: "code.symbols", Args: map[string]any{"query": "cachedSymbol", "max_files": 20}})
+	if err != nil {
+		t.Fatalf("code.symbols: %v", err)
+	}
+	if second.Result.Output["cache_hit"] != true {
+		t.Fatalf("expected symbols lookup to reuse cached index, got %#v", second.Result.Output["cache_hit"])
+	}
+	if count, _ := second.Result.Output["count"].(int); count == 0 {
+		t.Fatalf("expected cached symbol lookup to find symbol, output=%#v", second.Result.Output)
+	}
+}
+
 func TestRuntimeBlocksShellWhenPolicyDisallowsIt(t *testing.T) {
 	ctx := context.Background()
 	runtime := NewBuiltinRuntime(nil, t.TempDir())

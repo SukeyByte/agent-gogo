@@ -20,8 +20,8 @@ const actionLoading = ref<string | null>(null)
 onMounted(async () => {
   const [t, a, e] = await Promise.all([api.getTask(taskId), api.listAttempts(taskId), api.listEvents(taskId)])
   task.value = t
-  attempts.value = a
-  events.value = e
+  attempts.value = a || []
+  events.value = e || []
 
   // Load tool calls and observations for each attempt
   const tcMap: Record<string, ToolCall[]> = {}
@@ -39,7 +39,26 @@ onMounted(async () => {
 
 async function taskAction(action: string) {
   actionLoading.value = action
-  await new Promise(r => setTimeout(r, 800))
+  try {
+    if (action === 'retry') {
+      await api.retryTask(taskId)
+      // Refresh task data
+      task.value = await api.getTask(taskId)
+    } else if (action === 'approve') {
+      const att = attempts.value[0]
+      await api.sendConfirmation(task.value?.project_id || '', taskId, att?.id || '', '', true, 'Approved via web console')
+      task.value = await api.getTask(taskId)
+    } else if (action === 'reject') {
+      const att = attempts.value[0]
+      await api.sendConfirmation(task.value?.project_id || '', taskId, att?.id || '', '', false, 'Rejected via web console')
+      task.value = await api.getTask(taskId)
+    } else {
+      // skip/fix — send as channel message
+      await api.sendChatMessage('', `/${action} task ${taskId}`)
+    }
+  } catch (err: any) {
+    alert(`Action failed: ${err.message}`)
+  }
   actionLoading.value = null
 }
 
@@ -75,7 +94,7 @@ function statusProgress(currentStatus: string): number {
       </div>
 
       <!-- Acceptance Criteria -->
-      <div v-if="task.acceptance_criteria.length" class="mt-4">
+      <div v-if="task.acceptance_criteria?.length" class="mt-4">
         <h4 class="text-xs font-medium text-gray-500 uppercase mb-2">Acceptance Criteria</h4>
         <ul class="space-y-1">
           <li v-for="c in task.acceptance_criteria" :key="c" class="flex items-center gap-2 text-sm text-gray-300">

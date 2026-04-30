@@ -2,6 +2,7 @@ package planner
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/sukeke/agent-gogo/internal/chain"
@@ -105,5 +106,24 @@ func TestEnsureResearchAndReflectionPreservesResearchBeforeReflection(t *testing
 	}
 	if len(out[2].DependsOn) != 1 || out[2].DependsOn[0] != "反思任务拆解与验收口径" {
 		t.Fatalf("expected implementation to depend on reflection, got %#v", out[2].DependsOn)
+	}
+}
+
+func TestLLMPlannerRejectsOverBroadFlatTaskList(t *testing.T) {
+	llm := provider.ChatFunc(func(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+		return provider.ChatResponse{Text: `{"tasks":[
+			{"title":"Task 1","goal":"g","description":"d","type":"general","depends_on":[],"acceptance":["a"]},
+			{"title":"Task 2","goal":"g","description":"d","type":"general","depends_on":[],"acceptance":["a"]},
+			{"title":"Task 3","goal":"g","description":"d","type":"general","depends_on":[],"acceptance":["a"]},
+			{"title":"Task 4","goal":"g","description":"d","type":"general","depends_on":[],"acceptance":["a"]}
+		]}`}, nil
+	})
+	planner := NewLLMPlanner(llm, "test")
+	_, err := planner.PlanProject(context.Background(), PlanRequest{
+		Project:       domain.Project{ID: "project", Goal: "simple task"},
+		IntentProfile: intent.Profile{Complexity: "low"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "above max") {
+		t.Fatalf("expected task-count guard, got %v", err)
 	}
 }

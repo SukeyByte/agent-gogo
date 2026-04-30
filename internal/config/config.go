@@ -19,6 +19,12 @@ type Config struct {
 	Runtime       RuntimeConfig
 	Communication CommunicationConfig
 	Security      SecurityConfig
+	Session       SessionConfig
+}
+
+type SessionConfig struct {
+	MaxIdle time.Duration
+	UserID  string
 }
 
 type LLMConfig struct {
@@ -55,6 +61,7 @@ type StorageConfig struct {
 type RuntimeConfig struct {
 	MaxTasksPerProject int
 	TestCommand        string
+	ContextMaxChars    int
 }
 
 type CommunicationConfig struct {
@@ -119,6 +126,12 @@ func Load(path string) (Config, error) {
 	if strings.TrimSpace(cfg.Runtime.TestCommand) == "" {
 		cfg.Runtime.TestCommand = "go test ./..."
 	}
+	if cfg.Runtime.ContextMaxChars <= 0 {
+		cfg.Runtime.ContextMaxChars = 60000
+	}
+	if cfg.Session.MaxIdle <= 0 {
+		cfg.Session.MaxIdle = 24 * time.Hour
+	}
 	return cfg, nil
 }
 
@@ -151,6 +164,7 @@ func Default() Config {
 		Runtime: RuntimeConfig{
 			MaxTasksPerProject: 50,
 			TestCommand:        "go test ./...",
+			ContextMaxChars:    60000,
 		},
 		Communication: CommunicationConfig{
 			ChannelID: "cli",
@@ -160,6 +174,9 @@ func Default() Config {
 			RequireConfirmHighRisk: true,
 			AllowShell:             false,
 			ShellAllowlist:         []string{"go test", "go build", "go run", "git status", "git diff"},
+		},
+		Session: SessionConfig{
+			MaxIdle: 24 * time.Hour,
 		},
 	}
 }
@@ -294,6 +311,10 @@ func applyKeyValue(cfg *Config, section string, key string, value string) {
 			}
 		case "test_command":
 			cfg.Runtime.TestCommand = value
+		case "context_max_chars", "token_budget":
+			if maxChars, ok := parsePositiveInt(value); ok {
+				cfg.Runtime.ContextMaxChars = maxChars
+			}
 		}
 	case "communication":
 		switch key {
@@ -310,6 +331,19 @@ func applyKeyValue(cfg *Config, section string, key string, value string) {
 			cfg.Security.AllowShell = parseBool(value)
 		case "shell_allowlist":
 			cfg.Security.ShellAllowlist = splitList(value)
+		}
+	case "session":
+		switch key {
+		case "user_id":
+			cfg.Session.UserID = value
+		case "max_idle_hours":
+			if hours, ok := parsePositiveInt(value); ok {
+				cfg.Session.MaxIdle = time.Duration(hours) * time.Hour
+			}
+		case "max_idle":
+			if duration, err := time.ParseDuration(value); err == nil && duration > 0 {
+				cfg.Session.MaxIdle = duration
+			}
 		}
 	}
 }
@@ -387,6 +421,11 @@ func applyEnv(cfg *Config) {
 	}
 	if value := os.Getenv("AGENT_GOGO_TEST_COMMAND"); value != "" {
 		cfg.Runtime.TestCommand = value
+	}
+	if value := os.Getenv("AGENT_GOGO_CONTEXT_MAX_CHARS"); value != "" {
+		if maxChars, ok := parsePositiveInt(value); ok {
+			cfg.Runtime.ContextMaxChars = maxChars
+		}
 	}
 }
 

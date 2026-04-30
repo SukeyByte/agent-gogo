@@ -41,7 +41,7 @@ func (p *FixedPlanner) PlanProject(ctx context.Context, req PlanRequest) ([]doma
 		{
 			ProjectID:   req.Project.ID,
 			Title:       "Run minimal runtime task",
-			Description: "Fixed M3 planner task for validating project planning, scheduling, execution, testing, and review.",
+			Description: "Fixed M3 planner task for validating project planning, scheduling, execution, and review.",
 			Status:      domain.TaskStatusDraft,
 			AcceptanceCriteria: []string{
 				"task attempt is created",

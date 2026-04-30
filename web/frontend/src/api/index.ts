@@ -1,5 +1,4 @@
-// API client - currently returns mock data
-// Replace with real fetch calls when backend API is ready
+// API client — real fetch with mock fallback
 
 import type {
   Project, Task, TaskAttempt, TaskEvent, ToolCall, Observation,
@@ -16,95 +15,177 @@ import {
   mockMemories, mockChannels, mockConfig, mockChainDecision, mockFiles,
 } from './mock-data'
 
-const delay = (ms: number) => new Promise(r => setTimeout(r, ms))
+// --- Generic request helper ---
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`/api${path}`, {
+    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    ...init,
+  })
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`API ${res.status}: ${body}`)
+  }
+  return res.json()
+}
+
+// Fire-and-forget POST (no response body parsing needed)
+async function post(path: string, body: unknown): Promise<void> {
+  const res = await fetch(`/api${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`API ${res.status}: ${text}`)
+  }
+}
+
+function withFallback<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
+  return fn().catch(() => fallback)
+}
+
+// --- SSE ---
+
+export function createEventSource(): EventSource {
+  return new EventSource('/api/events')
+}
+
+// --- API surface ---
 
 export const api = {
   // Dashboard
-  async getDashboardStats(): Promise<DashboardStats> { await delay(100); return mockDashboardStats },
-  async getProviders(): Promise<ProviderStatus[]> { await delay(100); return mockProviders },
-  async getRecentProjects(): Promise<Project[]> { await delay(100); return mockProjects.slice(0, 3) },
+  async getDashboardStats(): Promise<DashboardStats> {
+    return withFallback(() => request<DashboardStats>('/stats'), mockDashboardStats)
+  },
+  async getProviders(): Promise<ProviderStatus[]> { return mockProviders },
+  async getRecentProjects(): Promise<Project[]> {
+    return withFallback(async () => {
+      const all = await request<Project[]>('/projects')
+      return all.slice(0, 3)
+    }, mockProjects.slice(0, 3))
+  },
 
   // Projects
-  async listProjects(): Promise<Project[]> { await delay(150); return mockProjects },
-  async getProject(id: string): Promise<Project> { await delay(100); return mockProjects.find(p => p.id === id) || mockProjects[0] },
-  async createProject(name: string, goal: string): Promise<Project> {
-    await delay(200)
-    return { id: `proj-${Date.now()}`, name, goal, status: 'ACTIVE', created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+  async listProjects(): Promise<Project[]> {
+    return withFallback(() => request<Project[]>('/projects'), mockProjects)
+  },
+  async getProject(id: string): Promise<Project> {
+    return withFallback(() => request<Project>(`/projects/${id}`), mockProjects.find(p => p.id === id) || mockProjects[0])
+  },
+  async createProject(name: string, goal: string): Promise<void> {
+    await post('/message', { type: 'goal.submitted', text: goal, payload: { name } })
   },
 
   // Tasks
-  async listTasks(projectId: string): Promise<Task[]> { await delay(150); return getTasksForProject(projectId) },
-  async getTask(id: string): Promise<Task> {
-    await delay(100)
-    for (const tasks of Object.values(mockTasks)) {
-      const t = tasks.find(t => t.id === id)
-      if (t) return t
-    }
-    return getTasksForProject('proj-1')[0]
+  async listTasks(projectId: string): Promise<Task[]> {
+    return withFallback(() => request<Task[]>(`/projects/${projectId}/tasks`), getTasksForProject(projectId))
   },
-  async transitionTask(taskId: string, status: string): Promise<Task> {
-    await delay(200)
-    const task = await this.getTask(taskId)
-    return { ...task, status: status as Task['status'] }
+  async getTask(id: string): Promise<Task> {
+    return withFallback(() => request<Task>(`/tasks/${id}`), (() => {
+      for (const tasks of Object.values(mockTasks)) {
+        const t = tasks.find(t => t.id === id)
+        if (t) return t
+      }
+      return getTasksForProject('proj-1')[0]
+    })())
+  },
+  async retryTask(taskId: string): Promise<void> {
+    await post('/message', { type: 'task.retry', task_id: taskId })
   },
 
   // Attempts
-  async listAttempts(taskId: string): Promise<TaskAttempt[]> { await delay(100); return getAttemptsForTask(taskId) },
+  async listAttempts(taskId: string): Promise<TaskAttempt[]> {
+    return withFallback(() => request<TaskAttempt[]>(`/tasks/${taskId}/attempts`), getAttemptsForTask(taskId))
+  },
 
   // Events
-  async listEvents(taskId: string): Promise<TaskEvent[]> { await delay(100); return getEventsForTask(taskId) },
+  async listEvents(taskId: string): Promise<TaskEvent[]> {
+    return withFallback(() => request<TaskEvent[]>(`/tasks/${taskId}/events`), getEventsForTask(taskId))
+  },
 
   // Tool calls
-  async listToolCalls(attemptId: string): Promise<ToolCall[]> { await delay(100); return getToolCallsForAttempt(attemptId) },
+  async listToolCalls(attemptId: string): Promise<ToolCall[]> {
+    return withFallback(() => request<ToolCall[]>(`/attempts/${attemptId}/tool-calls`), getToolCallsForAttempt(attemptId))
+  },
 
   // Observations
-  async listObservations(attemptId: string): Promise<Observation[]> { await delay(100); return mockObservations[attemptId] || [] },
+  async listObservations(attemptId: string): Promise<Observation[]> {
+    return withFallback(() => request<Observation[]>(`/attempts/${attemptId}/observations`), mockObservations[attemptId] || [])
+  },
 
-  // Test results
-  async listTestResults(attemptId: string): Promise<TestResult[]> { await delay(100); return mockTestResults[attemptId] || [] },
-
-  // Review results
-  async listReviewResults(attemptId: string): Promise<ReviewResult[]> { await delay(100); return mockReviewResults[attemptId] || [] },
+  // Test results — mock only (no backend endpoint yet)
+  async listTestResults(attemptId: string): Promise<TestResult[]> { return mockTestResults[attemptId] || [] },
+  async listReviewResults(attemptId: string): Promise<ReviewResult[]> { return mockReviewResults[attemptId] || [] },
 
   // Artifacts
-  async listArtifacts(projectId: string): Promise<Artifact[]> { await delay(100); return mockArtifacts[projectId] || [] },
-
-  // Chat
-  async listChatMessages(sessionId: string): Promise<ChatMessage[]> { await delay(100); return mockChatMessages },
-  async sendChatMessage(sessionId: string, content: string): Promise<ChatMessage> {
-    await delay(300)
-    return {
-      id: `msg-${Date.now()}`, session_id: sessionId, project_id: '', role: 'assistant',
-      content: `收到消息: "${content}"\n\n正在处理中...`, artifacts: [], metadata: {}, created_at: new Date().toISOString(),
-    }
+  async listArtifacts(projectId: string): Promise<Artifact[]> {
+    return withFallback(() => request<Artifact[]>(`/projects/${projectId}/artifacts`), mockArtifacts[projectId] || [])
   },
-  async getChainDecision(sessionId: string): Promise<ChainDecision> { await delay(100); return mockChainDecision },
 
-  // Skills
-  async listSkills(): Promise<SkillCard[]> { await delay(100); return mockSkills },
-  async getSkill(id: string): Promise<SkillCard> { await delay(100); return mockSkills.find(s => s.id === id) || mockSkills[0] },
-  async searchSkills(query: string): Promise<SkillCard[]> { await delay(150); return mockSkills.filter(s => s.name.includes(query) || s.description.includes(query)) },
+  // Chat — fire-and-forget via POST /api/message, responses arrive via SSE
+  async listChatMessages(_sessionId: string): Promise<ChatMessage[]> { return mockChatMessages },
+  async sendChatMessage(_sessionId: string, content: string): Promise<void> {
+    await post('/message', { type: 'goal.submitted', text: content })
+  },
+  async getChainDecision(_sessionId: string): Promise<ChainDecision> { return mockChainDecision },
 
-  // Personas
-  async listPersonas(): Promise<PersonaCard[]> { await delay(100); return mockPersonas },
-  async getPersona(id: string): Promise<PersonaCard> { await delay(100); return mockPersonas.find(p => p.id === id) || mockPersonas[0] },
+  // Confirmation (approve/reject)
+  async sendConfirmation(projectId: string, taskId: string, attemptId: string, actionId: string, approved: boolean, message: string): Promise<void> {
+    await post('/confirmation', { project_id: projectId, task_id: taskId, attempt_id: attemptId, action_id: actionId, approved, message })
+  },
 
-  // Memory
-  async listMemories(scope?: string): Promise<MemoryItem[]> { await delay(100); return scope ? mockMemories.filter(m => m.scope === scope) : mockMemories },
-  async searchMemories(query: string): Promise<MemoryItem[]> { await delay(150); return mockMemories.filter(m => m.summary.includes(query) || m.body.includes(query) || m.tags.some(t => t.includes(query))) },
+  // Skills — mock only
+  async listSkills(): Promise<SkillCard[]> { return mockSkills },
+  async getSkill(id: string): Promise<SkillCard> { return mockSkills.find(s => s.id === id) || mockSkills[0] },
+  async searchSkills(query: string): Promise<SkillCard[]> { return mockSkills.filter(s => s.name.includes(query) || s.description.includes(query)) },
+
+  // Personas — mock only
+  async listPersonas(): Promise<PersonaCard[]> { return mockPersonas },
+  async getPersona(id: string): Promise<PersonaCard> { return mockPersonas.find(p => p.id === id) || mockPersonas[0] },
+
+  // Memory — mock only
+  async listMemories(scope?: string): Promise<MemoryItem[]> { return scope ? mockMemories.filter(m => m.scope === scope) : mockMemories },
+  async searchMemories(query: string): Promise<MemoryItem[]> { return mockMemories.filter(m => m.summary.includes(query) || m.body.includes(query) || m.tags.some(t => t.includes(query))) },
   async addMemory(item: Partial<MemoryItem>): Promise<MemoryItem> {
-    await delay(200)
     return { id: `mem-${Date.now()}`, scope: item.scope || 'working', type: item.type || 'fuzzy', tags: item.tags || [], summary: item.summary || '', body: item.body || '', confidence: item.confidence || 0.8, artifact_ref: '', source_task_id: '', version_hash: `m${Date.now()}` }
   },
-  async deleteMemory(id: string): Promise<void> { await delay(100) },
+  async deleteMemory(_id: string): Promise<void> {},
 
-  // Channels
-  async listChannels(): Promise<ChannelInfo[]> { await delay(100); return mockChannels },
+  // Channels — mock only
+  async listChannels(): Promise<ChannelInfo[]> { return mockChannels },
 
-  // Config
-  async getConfig(): Promise<AppConfig> { await delay(100); return mockConfig },
-  async saveConfig(config: AppConfig): Promise<AppConfig> { await delay(300); return config },
+  // Config — read from API, save via channel command
+  async getConfig(): Promise<AppConfig> {
+    return withFallback(async (): Promise<AppConfig> => {
+      const raw = await request<Record<string, any>>('/config')
+      return {
+        llm: { provider: '', model: '', base_url: '', api_key: '', timeout: 0 },
+        embedding: { provider: '', model: '', base_url: '', api_key: '' },
+        browser: { provider: '', mcp_url: '', headless: false, timeout: 0 },
+        storage: {
+          workspace_path: raw.workspace_path || '',
+          sqlite_path: raw.sqlite_path || '',
+          artifact_path: raw.artifact_path || '',
+          log_path: raw.log_path || '',
+          skill_roots: raw.skill_roots || [],
+          persona_path: raw.persona_path || '',
+        },
+        memory: { max_working_items: 0, max_project_items: 0, default_scope: '', enable_auto_extract: false },
+        runtime: { max_tasks_per_project: 0, max_retries: 0, token_budget: 0, enable_prompt_cache: false, enable_auto_repair: false, enable_debug_log: false },
+        chain_router: { l0_max_tokens: 0, l1_max_tools: 0, l2_max_tasks: 0, auto_plan_threshold: '' },
+        security: { require_confirm_high_risk: false, allow_shell: false, allow_auto_execute_high_risk: false },
+      }
+    }, mockConfig)
+  },
+  async saveConfig(config: AppConfig): Promise<void> {
+    await post('/message', {
+      type: 'goal.submitted',
+      text: `/config ${JSON.stringify(config as unknown as Record<string, unknown>)}`,
+    })
+  },
 
-  // Files
-  async listFiles(path?: string): Promise<FileEntry[]> { await delay(100); return mockFiles },
+  // Files — mock only
+  async listFiles(_path?: string): Promise<FileEntry[]> { return mockFiles },
 }

@@ -48,6 +48,22 @@ func (e *MinimalExecutor) Execute(ctx context.Context, task domain.Task) (Result
 	}); err != nil {
 		return Result{}, err
 	}
+	if _, err := e.store.CreateObservation(ctx, domain.Observation{
+		AttemptID:   attempt.ID,
+		Type:        "state.tool_succeeded",
+		Summary:     "minimal executor produced deterministic baseline evidence",
+		EvidenceRef: "minimal://executor",
+	}); err != nil {
+		return Result{}, err
+	}
+	if _, err := e.store.CreateObservation(ctx, domain.Observation{
+		AttemptID:   attempt.ID,
+		Type:        "agent.finish",
+		Summary:     "minimal executor finished baseline task with state evidence",
+		EvidenceRef: "minimal://finish",
+	}); err != nil {
+		return Result{}, err
+	}
 	implemented, err := e.store.TransitionTask(ctx, inProgress.ID, domain.TaskStatusImplemented, "executor produced implementation result")
 	if err != nil {
 		return Result{}, err

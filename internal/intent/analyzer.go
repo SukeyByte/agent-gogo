@@ -10,6 +10,7 @@ import (
 	"github.com/sukeke/agent-gogo/internal/chain"
 	"github.com/sukeke/agent-gogo/internal/contextbuilder"
 	"github.com/sukeke/agent-gogo/internal/llmjson"
+	"github.com/sukeke/agent-gogo/internal/prompts"
 	"github.com/sukeke/agent-gogo/internal/provider"
 	"github.com/sukeke/agent-gogo/internal/textutil"
 )
@@ -91,10 +92,7 @@ func normalizeProfile(profile Profile) Profile {
 	return profile
 }
 
-const intentSystemPrompt = `You are the Intent Analyzer for agent-gogo.
-Return only one JSON object with:
-task_type, complexity, domains, required_capabilities, risk_level, needs_user_confirmation, grounding_requirement, confidence.
-Keep the answer small and do not include tool schemas. Do not include markdown.`
+var intentSystemPrompt = prompts.Text("intent_analyzer")
 
 func decodeProfileJSONObject(text string, target *Profile) error {
 	var wire intentProfileWire

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -23,7 +24,6 @@ import (
 	"github.com/sukeke/agent-gogo/internal/skill"
 	"github.com/sukeke/agent-gogo/internal/taskaware"
 	"github.com/sukeke/agent-gogo/internal/tester"
-	"github.com/sukeke/agent-gogo/internal/textutil"
 	"github.com/sukeke/agent-gogo/internal/validator"
 )
 
@@ -55,6 +55,10 @@ type CommunicationDispatcher interface {
 	Dispatch(ctx context.Context, intent comm.CommunicationIntent) (comm.DeliveryReceipt, error)
 }
 
+type SessionContextSaver interface {
+	SaveSessionRuntimeContext(ctx context.Context, sctx domain.SessionRuntimeContext) error
+}
+
 type Service struct {
 	store                Store
 	planner              planner.Planner
@@ -68,6 +72,8 @@ type Service struct {
 	communication        CommunicationDispatcher
 	communicationChannel string
 	communicationSession string
+	sessionSaver         SessionContextSaver
+	sessionID            string
 	functions            function.Registry
 	skills               *skill.Registry
 	personas             *persona.Registry
@@ -79,6 +85,7 @@ type Service struct {
 	contextByProjectID   map[string]string
 	decisionByProjectID  map[string]chain.Decision
 	profileByProjectID   map[string]intentpkg.Profile
+	contextMaxChars      int
 }
 
 type CreateProjectRequest struct {
@@ -121,8 +128,8 @@ func NewService(store Store) *Service {
 		validator:           validator.NewMinimalTaskValidator(),
 		scheduler:           scheduler.NewReadyScheduler(store),
 		executor:            executor.NewMinimalExecutor(store),
-		tester:              tester.NewMinimalTester(store),
-		reviewer:            reviewer.NewMinimalReviewer(store),
+		tester:              tester.NewGenericEvidenceTester(store),
+		reviewer:            reviewer.NewEvidenceReviewer(store),
 		memories:            memory.NewIndex(),
 		contextByProjectID:  map[string]string{},
 		decisionByProjectID: map[string]chain.Decision{},
@@ -177,6 +184,15 @@ func (s *Service) UseContextAssets(functions function.Registry, skills *skill.Re
 
 func (s *Service) UseMemoryPersistence(path string) {
 	s.memoryPersistPath = strings.TrimSpace(path)
+}
+
+func (s *Service) UseContextBudget(maxChars int) {
+	s.contextMaxChars = maxChars
+}
+
+func (s *Service) UseSession(saver SessionContextSaver, sessionID string) {
+	s.sessionSaver = saver
+	s.sessionID = strings.TrimSpace(sessionID)
 }
 
 func (s *Service) AddActivePersona(persona contextbuilder.Persona) {
@@ -300,195 +316,10 @@ func (s *Service) PlanProject(ctx context.Context, projectID string) ([]domain.T
 	if err := s.emit(ctx, comm.NewMessageIntent(s.communicationChannel, fmt.Sprintf("Planned %d task(s)", len(readyTasks))), project.ID); err != nil {
 		return nil, err
 	}
+	s.saveSessionContext(ctx, project.ID)
 	return readyTasks, nil
 }
 
-func (s *Service) buildRuntimeContext(ctx context.Context, project domain.Project, currentTaskID string, decision chain.Decision, profile intentpkg.Profile) (string, error) {
-	if s.contextSerializer == nil {
-		return "", nil
-	}
-	awareness, err := taskaware.BuildContextSnapshot(ctx, s.store, project, currentTaskID)
-	if err != nil {
-		return "", err
-	}
-	if err := s.log(ctx, "taskaware.digest", map[string]any{
-		"project_id":      project.ID,
-		"current_task_id": currentTaskID,
-		"project_summary": awareness.ProjectState.Summary,
-		"task_state":      awareness.TaskState,
-	}); err != nil {
-		return "", err
-	}
-
-	var activeFunctionSchemas []contextbuilder.FunctionSchema
-	var deferredFunctionCards []contextbuilder.FunctionCard
-	if s.functions != nil {
-		cards, err := s.functions.Search(ctx, function.SearchRequest{
-			Query:                project.Goal,
-			TaskType:             profile.TaskType,
-			Domains:              profile.Domains,
-			RequiredCapabilities: requiredCapabilities(decision, profile),
-			Limit:                8,
-		})
-		if err != nil {
-			return "", err
-		}
-		if err := s.log(ctx, "function.search", cards); err != nil {
-			return "", err
-		}
-		deferredFunctionCards = functionCardsForContext(cards)
-		active, err := s.functions.Activate(ctx, firstFunctionCards(cards, 4))
-		if err != nil {
-			return "", err
-		}
-		activeFunctionSchemas = active.ContextSchemas()
-	}
-
-	activeSkills, deferredSkills, err := s.searchSkills(ctx, project, profile, decision)
-	if err != nil {
-		return "", err
-	}
-	activePersonas, err := s.searchPersonas(ctx, project, profile)
-	if err != nil {
-		return "", err
-	}
-	relevantMemories, err := s.searchMemories(ctx, project, profile, awareness.QueryText)
-	if err != nil {
-		return "", err
-	}
-
-	pack := contextbuilder.ContextPack{
-		RuntimeRules: []contextbuilder.Message{
-			{ID: "runtime-001", Role: "system", Text: "Use the runtime state machine, tool evidence, tester, and reviewer before marking work done.", VersionHash: "runtime-v1"},
-		},
-		SecurityRules: []contextbuilder.Message{
-			{ID: "security-001", Role: "system", Text: "All side effects must go through Tool Runtime or Communication Runtime. Do not expose API keys.", VersionHash: "security-v1"},
-		},
-		ChannelCapabilities: []contextbuilder.ChannelCapability{
-			{
-				ChannelType:           s.communicationChannel,
-				Capabilities:          []string{"send_message", "notify_done", "ask_confirmation"},
-				SupportedMessageTypes: []string{"text", "artifact"},
-				SupportsConfirmation:  true,
-			},
-		},
-		IntentProfile:              profile.ContextProfile(),
-		ActiveCapabilities:         capabilitySpecs(activeFunctionSchemas),
-		ActiveFunctionSchemas:      activeFunctionSchemas,
-		DeferredFunctionCandidates: deferredFunctionCards,
-		ActiveSkillInstructions:    activeSkills,
-		DeferredSkillCandidates:    deferredSkills,
-		ActivePersonas:             activePersonas,
-		RelevantMemories:           relevantMemories,
-		ProjectState:               awareness.ProjectState,
-		TaskState:                  awareness.TaskState,
-		AcceptanceCriteria:         awareness.AcceptanceCriteria,
-		EvidenceRefs:               awareness.EvidenceRefs,
-		CurrentUserInput:           project.Goal,
-	}
-	serialized, err := s.contextSerializer.Serialize(ctx, pack)
-	if err != nil {
-		return "", err
-	}
-	if err := s.log(ctx, "contextbuilder.serialize", map[string]any{
-		"layer_keys": serialized.LayerKeys,
-		"block_keys": serialized.BlockKeys,
-		"text":       serialized.Text,
-	}); err != nil {
-		return "", err
-	}
-	return serialized.Text, nil
-}
-
-func (s *Service) searchSkills(ctx context.Context, project domain.Project, profile intentpkg.Profile, decision chain.Decision) ([]contextbuilder.SkillInstruction, []contextbuilder.SkillPackageRef, error) {
-	if s.skills == nil {
-		return nil, nil, nil
-	}
-	query := strings.TrimSpace(project.Goal + " " + profile.TaskType + " " + strings.Join(decision.SkillTags, " "))
-	cards, err := s.skills.Search(ctx, query, 4)
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(cards) == 0 {
-		cards, err = s.skills.Search(ctx, "story writing plot chapter fiction", 4)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-	if err := s.log(ctx, "skill.search", cards); err != nil {
-		return nil, nil, err
-	}
-	active := make([]contextbuilder.SkillInstruction, 0, minInt(2, len(cards)))
-	for _, card := range firstSkillCards(cards, 2) {
-		pkg, err := s.skills.Load(ctx, card.ID)
-		if err != nil {
-			return nil, nil, err
-		}
-		active = append(active, pkg.ContextInstruction())
-		if err := s.log(ctx, "skill.load", map[string]any{"id": pkg.ID, "name": pkg.Name, "path": pkg.Path}); err != nil {
-			return nil, nil, err
-		}
-	}
-	deferred := make([]contextbuilder.SkillPackageRef, 0, len(cards))
-	for _, card := range cards {
-		deferred = append(deferred, contextbuilder.SkillPackageRef{
-			ID:          card.ID,
-			Name:        card.Name,
-			VersionHash: card.VersionHash,
-			Path:        card.Path,
-			Reason:      card.Reason,
-		})
-	}
-	return active, deferred, nil
-}
-
-func (s *Service) searchPersonas(ctx context.Context, project domain.Project, profile intentpkg.Profile) ([]contextbuilder.Persona, error) {
-	active := append([]contextbuilder.Persona(nil), s.activePersonas...)
-	if s.personas == nil {
-		return active, nil
-	}
-	query := strings.TrimSpace(project.Goal + " " + profile.TaskType)
-	cards, err := s.personas.Search(ctx, query, 2)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.log(ctx, "persona.search", cards); err != nil {
-		return nil, err
-	}
-	for _, card := range cards {
-		persona, err := s.personas.Load(ctx, card.ID)
-		if err != nil {
-			return nil, err
-		}
-		active = append(active, persona.ContextPersona())
-		if err := s.log(ctx, "persona.load", map[string]any{"id": persona.ID, "name": persona.Name, "path": persona.Path}); err != nil {
-			return nil, err
-		}
-	}
-	return active, nil
-}
-
-func (s *Service) searchMemories(ctx context.Context, project domain.Project, profile intentpkg.Profile, awarenessQuery string) ([]contextbuilder.MemoryItem, error) {
-	if s.memories == nil {
-		return nil, nil
-	}
-	cards, err := s.memories.Search(ctx, strings.TrimSpace(project.Goal+" "+profile.TaskType+" "+awarenessQuery), "project", 8)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.log(ctx, "memory.search", cards); err != nil {
-		return nil, err
-	}
-	items := make([]contextbuilder.MemoryItem, 0, len(cards))
-	for _, card := range cards {
-		item, err := s.memories.Load(ctx, card.ID)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, item.ContextMemory())
-	}
-	return items, nil
-}
 
 func (s *Service) routeProject(ctx context.Context, project domain.Project) (chain.Decision, error) {
 	if s.chainRouter == nil {
@@ -584,6 +415,7 @@ func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunRes
 	if err := s.emit(ctx, comm.NewDoneIntent(s.communicationChannel, fmt.Sprintf("Task done: %s", reviewed.Task.Title)), projectID); err != nil {
 		return TaskRunResult{}, err
 	}
+	s.saveSessionContext(ctx, projectID)
 	return result, nil
 }
 
@@ -706,6 +538,18 @@ func (s *Service) createRepairTask(ctx context.Context, projectID string, failed
 	if message == "" {
 		message = "runtime verification failed"
 	}
+	if latest, err := s.store.GetTask(ctx, failedTask.ID); err == nil {
+		failedTask = latest
+	}
+	if failedTask.Status != domain.TaskStatusFailed && failedTask.Status != domain.TaskStatusDone && failedTask.Status != domain.TaskStatusCancelled {
+		if domain.CanTransitionTask(failedTask.Status, domain.TaskStatusFailed) {
+			transitioned, err := s.store.TransitionTask(ctx, failedTask.ID, domain.TaskStatusFailed, message)
+			if err != nil {
+				return err
+			}
+			failedTask = transitioned
+		}
+	}
 	if _, err := s.store.AddTaskEvent(ctx, domain.TaskEvent{
 		TaskID:    failedTask.ID,
 		AttemptID: attempt.ID,
@@ -786,6 +630,42 @@ func (s *Service) persistMemories(ctx context.Context) error {
 	return s.memories.Persist(ctx)
 }
 
+func (s *Service) saveSessionContext(ctx context.Context, projectID string) {
+	if s.sessionSaver == nil || s.sessionID == "" {
+		return
+	}
+	decision := s.decisionByProjectID[projectID]
+	profile := s.profileByProjectID[projectID]
+	planningContext := s.contextByProjectID[projectID]
+
+	decisionJSON, _ := json.Marshal(decision)
+	profileJSON, _ := json.Marshal(profile)
+
+	var memoryJSON []byte
+	if s.memories != nil {
+		items := s.memories.Items()
+		memoryJSON, _ = json.Marshal(items)
+	}
+
+	var personasJSON []byte
+	personasJSON, _ = json.Marshal(s.activePersonas)
+
+	sctx := domain.SessionRuntimeContext{
+		SessionID:      s.sessionID,
+		ProjectID:      projectID,
+		ChainDecision:  string(decisionJSON),
+		IntentProfile:  string(profileJSON),
+		ContextText:    planningContext,
+		MemorySnapshot: string(memoryJSON),
+		ActivePersonas: string(personasJSON),
+	}
+	if err := s.sessionSaver.SaveSessionRuntimeContext(ctx, sctx); err != nil {
+		s.log(ctx, "session.save_context_failed", map[string]any{"session_id": s.sessionID, "error": err.Error()})
+		return
+	}
+	s.log(ctx, "session.context_saved", map[string]any{"session_id": s.sessionID, "project_id": projectID})
+}
+
 func (s *Service) emit(ctx context.Context, intent comm.CommunicationIntent, projectID string) error {
 	if s.communication == nil || s.communicationChannel == "" {
 		return nil
@@ -804,67 +684,3 @@ func (s *Service) log(ctx context.Context, stage string, payload any) error {
 	return s.logger.Log(ctx, stage, payload)
 }
 
-func requiredCapabilities(decision chain.Decision, profile intentpkg.Profile) []string {
-	values := append([]string(nil), profile.RequiredCapabilities...)
-	values = append(values, decision.ToolNames...)
-	return sortedUniqueStrings(values)
-}
-
-func firstFunctionCards(cards []function.Card, limit int) []function.Card {
-	if limit > 0 && len(cards) > limit {
-		return append([]function.Card(nil), cards[:limit]...)
-	}
-	return append([]function.Card(nil), cards...)
-}
-
-func firstSkillCards(cards []skill.Card, limit int) []skill.Card {
-	if limit > 0 && len(cards) > limit {
-		return append([]skill.Card(nil), cards[:limit]...)
-	}
-	return append([]skill.Card(nil), cards...)
-}
-
-func functionCardsForContext(cards []function.Card) []contextbuilder.FunctionCard {
-	result := make([]contextbuilder.FunctionCard, 0, len(cards))
-	for _, card := range cards {
-		result = append(result, contextbuilder.FunctionCard{
-			Name:                card.Name,
-			Description:         card.Description,
-			Tags:                append([]string(nil), card.Tags...),
-			TaskTypes:           append([]string(nil), card.TaskTypes...),
-			RiskLevel:           card.RiskLevel,
-			InputSummary:        card.InputSummary,
-			OutputSummary:       card.OutputSummary,
-			Provider:            card.Provider,
-			RequiredPermissions: append([]string(nil), card.RequiredPermissions...),
-			SchemaRef:           card.SchemaRef,
-			VersionHash:         card.VersionHash,
-			Reason:              card.Reason,
-		})
-	}
-	return result
-}
-
-func capabilitySpecs(schemas []contextbuilder.FunctionSchema) []contextbuilder.CapabilitySpec {
-	result := make([]contextbuilder.CapabilitySpec, 0, len(schemas))
-	for _, schema := range schemas {
-		result = append(result, contextbuilder.CapabilitySpec{
-			Name:        schema.Name,
-			Description: schema.Description,
-			RiskLevel:   schema.RiskLevel,
-			VersionHash: schema.VersionHash,
-		})
-	}
-	return result
-}
-
-func sortedUniqueStrings(values []string) []string {
-	return textutil.SortedUniqueStrings(values)
-}
-
-func minInt(left int, right int) int {
-	if left < right {
-		return left
-	}
-	return right
-}

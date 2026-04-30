@@ -143,3 +143,40 @@ type Artifact struct {
 	Description string
 	CreatedAt   time.Time
 }
+
+type SessionStatus string
+
+const (
+	SessionStatusActive    SessionStatus = "ACTIVE"
+	SessionStatusPaused    SessionStatus = "PAUSED"
+	SessionStatusCompleted SessionStatus = "COMPLETED"
+	SessionStatusExpired   SessionStatus = "EXPIRED"
+)
+
+type Session struct {
+	ID           string
+	UserID       string
+	ChannelType  string
+	ChannelID    string
+	ProjectID    string
+	Status       SessionStatus
+	Title        string
+	Metadata     string
+	LastActiveAt time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type SessionRuntimeContext struct {
+	SessionID      string
+	ProjectID      string
+	ChainDecision  string
+	IntentProfile  string
+	ContextText    string
+	MemorySnapshot string
+	ActivePersonas string
+	ActiveSkills   string
+	FrozenRevision string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}

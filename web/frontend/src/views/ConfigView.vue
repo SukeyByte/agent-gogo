@@ -44,10 +44,14 @@ onMounted(async () => {
 
 async function save() {
   saving.value = true
-  await api.saveConfig(config)
+  try {
+    await api.saveConfig(config)
+    saved.value = true
+    setTimeout(() => saved.value = false, 2000)
+  } catch (err: any) {
+    alert('Save failed: ' + err.message)
+  }
   saving.value = false
-  saved.value = true
-  setTimeout(() => saved.value = false, 2000)
 }
 
 function reset() {

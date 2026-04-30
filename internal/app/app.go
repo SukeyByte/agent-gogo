@@ -6,7 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	htmlstd "html"
 	"io"
 	"net/http"
 	"os"
@@ -18,7 +17,6 @@ import (
 	"github.com/sukeke/agent-gogo/internal/communication"
 	appconfig "github.com/sukeke/agent-gogo/internal/config"
 	"github.com/sukeke/agent-gogo/internal/contextbuilder"
-	"github.com/sukeke/agent-gogo/internal/demo/webanswer"
 	"github.com/sukeke/agent-gogo/internal/domain"
 	"github.com/sukeke/agent-gogo/internal/executor"
 	"github.com/sukeke/agent-gogo/internal/function"
@@ -30,6 +28,7 @@ import (
 	"github.com/sukeke/agent-gogo/internal/reviewer"
 	appruntime "github.com/sukeke/agent-gogo/internal/runtime"
 	"github.com/sukeke/agent-gogo/internal/scheduler"
+	"github.com/sukeke/agent-gogo/internal/session"
 	"github.com/sukeke/agent-gogo/internal/skill"
 	"github.com/sukeke/agent-gogo/internal/store"
 	"github.com/sukeke/agent-gogo/internal/tester"
@@ -86,22 +85,149 @@ func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Wri
 		return err
 	}
 	defer sqlite.Close()
+
 	if strings.TrimSpace(addr) == "" {
 		addr = firstNonEmpty(os.Getenv("AGENT_GOGO_WEB_ADDR"), "127.0.0.1:8080")
 	}
-	handler := webhandlers.NewServer(sqlite, webhandlers.ConfigView{
+
+	channelID := cfg.Communication.ChannelID
+	if channelID == "" {
+		channelID = "web"
+	}
+	sessionID := cfg.Communication.SessionID
+	if sessionID == "" {
+		sessionID = "local"
+	}
+
+	// SSE hub for real-time push to browser
+	hub := webhandlers.NewSSEHub(50)
+
+	// Try to init full runtime (LLM may not be configured)
+	var sender webhandlers.ChannelEventSender
+	llm, llmErr := newLLMProvider(cfg)
+	if llmErr == nil {
+		sender, err = initWebRuntime(ctx, cfg, sqlite, llm, hub, channelID, sessionID)
+		if err != nil {
+			_, _ = fmt.Fprintf(writer, "Warning: runtime init failed (%v), running in read-only mode\n", err)
+			sender = nil
+		}
+	} else {
+		_, _ = fmt.Fprintf(writer, "Warning: LLM provider not configured (%v), running in read-only mode\n", llmErr)
+	}
+
+	distDir := findDistDir()
+	apiServer := webhandlers.NewAPIServer(sqlite, sender, hub, webhandlers.ConfigView{
 		WorkspacePath: cfg.Storage.WorkspacePath,
 		SQLitePath:    cfg.Storage.SQLitePath,
 		ArtifactPath:  cfg.Storage.ArtifactPath,
 		LogPath:       cfg.Storage.LogPath,
 		SkillRoots:    append([]string(nil), cfg.Storage.SkillRoots...),
 		PersonaPath:   cfg.Storage.PersonaPath,
-		ChannelID:     cfg.Communication.ChannelID,
-		SessionID:     cfg.Communication.SessionID,
-	})
-	_, _ = fmt.Fprintf(writer, "Web Console listening on http://%s\n", addr)
-	server := &http.Server{Addr: addr, Handler: handler}
+		ChannelID:     channelID,
+		SessionID:     sessionID,
+	}, channelID, sessionID, distDir)
+
+	mode := "read-only"
+	if sender != nil {
+		mode = "full runtime"
+	}
+	_, _ = fmt.Fprintf(writer, "Web Console (%s) listening on http://%s\n", mode, addr)
+	server := &http.Server{Addr: addr, Handler: apiServer}
 	return server.ListenAndServe()
+}
+
+func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQLiteStore, llm provider.LLMProvider, hub *webhandlers.SSEHub, channelID, sessionID string) (*runtimeServiceBridge, error) {
+	logger := observability.NoopLogger{}
+	loggedLLM := observability.NewLoggingLLMProvider(llm, logger)
+
+	commRuntime := communication.NewRuntime(communication.NewMemoryOutbox(), communication.NewRenderer())
+	commRuntime.RegisterChannel(channelID, webhandlers.NewWebConsoleAdapter(channelID, hub))
+
+	toolRuntime := tools.NewBuiltinRuntime(sqlite, cfg.Storage.WorkspacePath)
+	toolRuntime.UseLogger(logger)
+	toolRuntime.UseSecurityPolicy(tools.SecurityPolicy{
+		AllowShell:                cfg.Security.AllowShell,
+		ShellAllowlist:            cfg.Security.ShellAllowlist,
+		RequireConfirmationAtRisk: confirmationRisk(cfg),
+	}, tools.AutoConfirmationGate{})
+
+	skillRegistry, err := skill.Discover(ctx, cfg.Storage.SkillRoots...)
+	if err != nil {
+		return nil, fmt.Errorf("skill discover: %w", err)
+	}
+	personaRegistry, err := persona.Discover(ctx, cfg.Storage.PersonaPath)
+	if err != nil {
+		return nil, fmt.Errorf("persona discover: %w", err)
+	}
+	memoryPath := filepath.Join(cfg.Storage.ArtifactPath, "memories.jsonl")
+	memoryIndex, err := memory.NewPersistentIndex(ctx, memoryPath)
+	if err != nil {
+		return nil, fmt.Errorf("memory index: %w", err)
+	}
+
+	service := appruntime.NewServiceWithComponents(
+		sqlite,
+		planner.NewLLMPlanner(loggedLLM, cfg.LLM.Model),
+		validator.NewCapabilityTaskValidator(validator.NewMinimalTaskValidator(), toolRuntime.CapabilityRegistry(), toolRuntime.CapabilityPolicy()),
+		scheduler.NewReadyScheduler(sqlite),
+		executor.NewGenericExecutor(executor.GenericExecutorOptions{
+			Store:    sqlite,
+			Tools:    toolRuntime,
+			LLM:      loggedLLM,
+			Model:    cfg.LLM.Model,
+			MaxSteps: 12,
+		}),
+		tester.NewGenericEvidenceTester(sqlite),
+		reviewer.NewLLMReviewer(sqlite, loggedLLM, cfg.LLM.Model),
+	)
+	service.UseLLM(loggedLLM, cfg.LLM.Model)
+	service.UseCommunication(channelID, sessionID, commRuntime)
+	service.UseContextAssets(function.NewCatalogRegistry(), skillRegistry, personaRegistry, memoryIndex, contextbuilder.NewSerializer(contextbuilder.SerializerOptions{}), logger)
+	service.UseContextBudget(cfg.Runtime.ContextMaxChars)
+	service.UseMemoryPersistence(memoryPath)
+
+	return &runtimeServiceBridge{service: service}, nil
+}
+
+type runtimeServiceBridge struct {
+	service *appruntime.Service
+}
+
+func (b *runtimeServiceBridge) HandleChannelEvent(ctx context.Context, event webhandlers.InboundEvent) error {
+	return b.service.HandleChannelEvent(ctx, appruntime.ChannelEvent{
+		Type:      event.Type,
+		ChannelID: event.ChannelID,
+		SessionID: event.SessionID,
+		ProjectID: event.ProjectID,
+		TaskID:    event.TaskID,
+		Text:      event.Text,
+		Payload:   event.Payload,
+	})
+}
+
+func (b *runtimeServiceBridge) HandleUserConfirmation(ctx context.Context, confirmation webhandlers.InboundConfirmation) error {
+	return b.service.HandleUserConfirmation(ctx, appruntime.UserConfirmation{
+		ProjectID: confirmation.ProjectID,
+		TaskID:    confirmation.TaskID,
+		AttemptID: confirmation.AttemptID,
+		ActionID:  confirmation.ActionID,
+		Approved:  confirmation.Approved,
+		Message:   confirmation.Message,
+	})
+}
+
+func findDistDir() string {
+	candidates := []string{
+		"web/frontend/dist",
+		"../web/frontend/dist",
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			abs, _ := filepath.Abs(c)
+			return abs
+		}
+	}
+	return ""
 }
 
 func RunAgent(ctx context.Context, goal string, opts Options, writer io.Writer) error {
@@ -159,10 +285,25 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 	}
 	testRunner := tester.Tester(tester.NewGenericEvidenceTester(sqlite))
 
+	sessionSvc := session.NewService(sqlite, session.Config{
+		MaxIdle: cfg.Session.MaxIdle,
+	})
+	// CLI 每次运行创建新 session；Web/Telegram 等持久通道通过 FindOrCreate 复用
+	sess, err := sessionSvc.FindOrCreate(ctx, session.FindOrCreateRequest{
+		ChannelType: cfg.Communication.ChannelID,
+		ChannelID:   cfg.Communication.SessionID,
+		UserID:      cfg.Session.UserID,
+		Goal:        goal,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sessionSvc.Complete(context.Background(), sess.ID) }()
+
 	service := appruntime.NewServiceWithComponents(
 		sqlite,
 		planner.NewLLMPlanner(loggedLLM, cfg.LLM.Model),
-		validator.NewMinimalTaskValidator(),
+		validator.NewCapabilityTaskValidator(validator.NewMinimalTaskValidator(), toolRuntime.CapabilityRegistry(), toolRuntime.CapabilityPolicy()),
 		scheduler.NewReadyScheduler(sqlite),
 		executor.NewGenericExecutor(executor.GenericExecutorOptions{
 			Store:    sqlite,
@@ -177,7 +318,9 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 	service.UseLLM(loggedLLM, cfg.LLM.Model)
 	service.UseCommunication(cfg.Communication.ChannelID, cfg.Communication.SessionID, commRuntime)
 	service.UseContextAssets(function.NewCatalogRegistry(), skillRegistry, personaRegistry, memoryIndex, contextbuilder.NewSerializer(contextbuilder.SerializerOptions{}), logger)
+	service.UseContextBudget(cfg.Runtime.ContextMaxChars)
 	service.UseMemoryPersistence(memoryPath)
+	service.UseSession(sessionSvc, sess.ID)
 
 	if err := logger.Log(ctx, "input", map[string]any{
 		"goal":          goal,
@@ -193,6 +336,9 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 		Goal: goal,
 	})
 	if err != nil {
+		return err
+	}
+	if _, err := sessionSvc.BindProject(ctx, sess.ID, project.ID, goal); err != nil {
 		return err
 	}
 	tasks, err := service.PlanProject(ctx, project.ID)
@@ -228,321 +374,21 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 }
 
 func RunStory(ctx context.Context, goal string, opts Options, writer io.Writer) error {
-	cfg, err := appconfig.Load(opts.ConfigPath)
-	if err != nil {
-		return err
-	}
-	logger, err := observability.NewFileLogger(cfg.Storage.LogPath, "story")
-	if err != nil {
-		return err
-	}
-	llm, err := newLLMProvider(cfg)
-	if err != nil {
-		return err
-	}
-	loggedLLM := observability.NewLoggingLLMProvider(llm, logger)
-	sqlite, err := openStore(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer sqlite.Close()
-
-	commRuntime := newCommunicationRuntime(cfg, writer)
-	toolRuntime := tools.NewBuiltinRuntime(sqlite, cfg.Storage.ArtifactPath)
-	toolRuntime.UseLogger(logger)
-	toolRuntime.UseSecurityPolicy(tools.SecurityPolicy{
-		AllowShell:                cfg.Security.AllowShell,
-		ShellAllowlist:            cfg.Security.ShellAllowlist,
-		RequireConfirmationAtRisk: confirmationRisk(cfg),
-	}, newConfirmationGate(writer))
-
-	skillRegistry, err := skill.Discover(ctx, storySkillSources(cfg)...)
-	if err != nil {
-		return err
-	}
-	personaRegistry, err := persona.Discover(ctx, cfg.Storage.PersonaPath)
-	if err != nil {
-		return err
-	}
-	memoryIndex := memory.NewIndex()
-	novelistPersona, err := generateNovelistPersona(ctx, loggedLLM, cfg.LLM.Model, goal, logger)
-	if err != nil {
-		return err
-	}
-
-	service := appruntime.NewServiceWithComponents(
-		sqlite,
-		planner.NewLLMPlanner(loggedLLM, cfg.LLM.Model),
-		validator.NewMinimalTaskValidator(),
-		scheduler.NewReadyScheduler(sqlite),
-		executor.NewStoryExecutor(executor.StoryExecutorOptions{
-			Store:  sqlite,
-			Tools:  toolRuntime,
-			LLM:    loggedLLM,
-			Model:  cfg.LLM.Model,
-			Logger: logger,
-		}),
-		tester.NewMinimalTester(sqlite),
-		reviewer.NewLLMReviewer(sqlite, loggedLLM, cfg.LLM.Model),
-	)
-	service.UseLLM(loggedLLM, cfg.LLM.Model)
-	service.UseCommunication(cfg.Communication.ChannelID, cfg.Communication.SessionID, commRuntime)
-	service.UseContextAssets(function.NewCatalogRegistry(), skillRegistry, personaRegistry, memoryIndex, contextbuilder.NewSerializer(contextbuilder.SerializerOptions{}), logger)
-	service.AddActivePersona(novelistPersona)
-
-	if err := logger.Log(ctx, "input", map[string]any{
-		"goal":          goal,
-		"skill_sources": storySkillSources(cfg),
-	}); err != nil {
-		return err
-	}
-	project, err := service.CreateProject(ctx, appruntime.CreateProjectRequest{
-		Name: "Short mystery story",
-		Goal: goal,
-	})
-	if err != nil {
-		return err
-	}
-	if _, err := service.PlanProject(ctx, project.ID); err != nil {
-		return err
-	}
-	var story domain.Observation
-	ranTasks := 0
-	for {
-		result, err := service.RunNextTask(ctx, project.ID)
-		if errors.Is(err, sql.ErrNoRows) {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		ranTasks++
-		if candidate, obsErr := latestObservation(ctx, sqlite, result.Attempt.ID, "story.final"); obsErr == nil {
-			story = candidate
-		}
-	}
-	if ranTasks == 0 {
-		return sql.ErrNoRows
-	}
-	if strings.TrimSpace(story.Summary) == "" {
-		return errors.New("story.final observation not found")
-	}
-	logChannel(ctx, commRuntime, cfg, "output", story.Summary)
-	logChannel(ctx, commRuntime, cfg, "logs", logger.Path())
-	return logger.Log(ctx, "channel.output", map[string]any{
-		"channel_id": cfg.Communication.ChannelID,
-		"log_file":   logger.Path(),
-	})
+	return RunGeneric(ctx, goal, opts, writer)
 }
 
 func RunPersonalSite(ctx context.Context, name string, opts Options, writer io.Writer) error {
-	cfg, err := appconfig.Load(opts.ConfigPath)
-	if err != nil {
-		return err
-	}
-	logger, err := observability.NewFileLogger(cfg.Storage.LogPath, "personal-site")
-	if err != nil {
-		return err
-	}
-	sqlite, err := openStore(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer sqlite.Close()
-	commRuntime := newCommunicationRuntime(cfg, writer)
-	toolRuntime := tools.NewBuiltinRuntime(sqlite, cfg.Storage.WorkspacePath)
-	toolRuntime.UseLogger(logger)
-	toolRuntime.UseSecurityPolicy(tools.SecurityPolicy{
-		AllowShell:                cfg.Security.AllowShell,
-		ShellAllowlist:            cfg.Security.ShellAllowlist,
-		RequireConfirmationAtRisk: confirmationRisk(cfg),
-	}, newConfirmationGate(writer))
-	if err := logger.Log(ctx, "input", map[string]any{
-		"goal":         "为" + name + "写一个个人网页并完成部署",
-		"workspace":    cfg.Storage.WorkspacePath,
-		"test_command": cfg.Runtime.TestCommand,
-	}); err != nil {
-		return err
-	}
-
-	project, err := sqlite.CreateProject(ctx, domain.Project{Name: "M8 personal site", Goal: "Build and deploy a personal website for " + name})
-	if err != nil {
-		return err
-	}
-	task, err := sqlite.CreateTask(ctx, domain.Task{
-		ProjectID:          project.ID,
-		Title:              "Build and deploy personal website",
-		Description:        "Use M8 engineering tools to create a static personal site and deploy it to web/dist.",
-		AcceptanceCriteria: []string{"Code index is readable", "Source files are written", "Deployment files are written", "Tests pass", "Git diff is available"},
-	})
-	if err != nil {
-		return err
-	}
-	ready, err := sqlite.TransitionTask(ctx, task.ID, domain.TaskStatusReady, "M8 acceptance task ready")
-	if err != nil {
-		return err
-	}
-	inProgress, err := sqlite.TransitionTask(ctx, ready.ID, domain.TaskStatusInProgress, "personal site build started")
-	if err != nil {
-		return err
-	}
-	attempt, err := sqlite.CreateTaskAttempt(ctx, inProgress.ID)
-	if err != nil {
-		return err
-	}
-	if _, err := toolRuntime.Call(ctx, tools.CallRequest{AttemptID: attempt.ID, Name: "code.index", Args: map[string]any{"limit": 40, "symbol_limit": 40}}); err != nil {
-		return err
-	}
-	if _, err := toolRuntime.Call(ctx, tools.CallRequest{AttemptID: attempt.ID, Name: "code.symbols", Args: map[string]any{"query": "RunPersonalSite", "limit": 20}}); err != nil {
-		return err
-	}
-
-	html := personalSiteHTML(name)
-	css := personalSiteCSS()
-	files := []struct {
-		path    string
-		content string
-	}{
-		{path: "web/static/sukeyu/index.html", content: html},
-		{path: "web/static/sukeyu/styles.css", content: css},
-		{path: "web/dist/sukeyu/index.html", content: html},
-		{path: "web/dist/sukeyu/styles.css", content: css},
-	}
-	for _, file := range files {
-		if _, err := toolRuntime.Call(ctx, tools.CallRequest{
-			AttemptID: attempt.ID,
-			Name:      "file.write",
-			Args:      map[string]any{"path": file.path, "content": file.content},
-		}); err != nil {
-			return err
-		}
-	}
-	if _, err := toolRuntime.Call(ctx, tools.CallRequest{AttemptID: attempt.ID, Name: "git.status", Args: map[string]any{}}); err != nil {
-		return err
-	}
-	if _, err := toolRuntime.Call(ctx, tools.CallRequest{AttemptID: attempt.ID, Name: "file.diff", Args: map[string]any{"path": "web/static/sukeyu/index.html"}}); err != nil {
-		return err
-	}
-	implemented, err := sqlite.TransitionTask(ctx, inProgress.ID, domain.TaskStatusImplemented, "personal site source and deploy files written")
-	if err != nil {
-		return err
-	}
-	testResult, err := tester.NewCommandTester(sqlite, toolRuntime, cfg.Runtime.TestCommand).Test(ctx, implemented, attempt)
-	if err != nil {
-		return err
-	}
-	reviewResult, err := reviewer.NewMinimalReviewer(sqlite).Review(ctx, testResult.Task, attempt)
-	if err != nil {
-		return err
-	}
-	logChannel(ctx, commRuntime, cfg, "output", fmt.Sprintf("personal_site=%s deployed=%s task=%s", "web/static/sukeyu/index.html", "web/dist/sukeyu/index.html", reviewResult.Task.Status))
-	logChannel(ctx, commRuntime, cfg, "logs", logger.Path())
-	return logger.Log(ctx, "channel.output", map[string]any{
-		"channel_id":  cfg.Communication.ChannelID,
-		"log_file":    logger.Path(),
-		"task_status": reviewResult.Task.Status,
-	})
+	name = firstNonEmpty(name, "苏柯宇")
+	return RunGeneric(ctx, "为"+name+"写一个个人网页并完成部署", opts, writer)
 }
 
 func RunPlan(ctx context.Context, goal string, opts Options, writer io.Writer) error {
-	cfg, err := appconfig.Load(opts.ConfigPath)
-	if err != nil {
-		return err
-	}
-	llm, err := newLLMProvider(cfg)
-	if err != nil {
-		return err
-	}
-	sqlite, err := openStore(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer sqlite.Close()
-
-	commRuntime := newCommunicationRuntime(cfg, writer)
-	service := appruntime.NewService(sqlite)
-	service.UseLLM(llm, cfg.LLM.Model)
-	service.UseCommunication(cfg.Communication.ChannelID, cfg.Communication.SessionID, commRuntime)
-
-	logChannel(ctx, commRuntime, cfg, "input", goal)
-	project, err := service.CreateProject(ctx, appruntime.CreateProjectRequest{
-		Name: "CLI plan",
-		Goal: goal,
-	})
-	if err != nil {
-		return err
-	}
-	logChannel(ctx, commRuntime, cfg, "index", "using Chain Router + Intent Analyzer + LLM Planner")
-	tasks, err := service.PlanProject(ctx, project.ID)
-	if err != nil {
-		return err
-	}
-	logChannel(ctx, commRuntime, cfg, "plan", renderTasks(tasks))
-	logChannel(ctx, commRuntime, cfg, "output", fmt.Sprintf("project_id=%s task_count=%d", project.ID, len(tasks)))
-	return nil
+	return RunGeneric(ctx, goal, opts, writer)
 }
 
 func RunWebAnswer(ctx context.Context, url string, goal string, opts Options, writer io.Writer) error {
-	cfg, err := appconfig.Load(opts.ConfigPath)
-	if err != nil {
-		return err
-	}
-	llm, err := newLLMProvider(cfg)
-	if err != nil {
-		return err
-	}
-	browserRuntime, closeBrowser, err := newBrowserRuntime(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer closeBrowser()
-	sqlite, err := openStore(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer sqlite.Close()
-
-	commRuntime := newCommunicationRuntime(cfg, writer)
-	webExecutor := webanswer.NewExecutor(sqlite, browserRuntime, llm, cfg.LLM.Model, url, goal)
-	service := appruntime.NewServiceWithComponents(
-		sqlite,
-		planner.NewLLMPlanner(llm, cfg.LLM.Model),
-		validator.NewMinimalTaskValidator(),
-		scheduler.NewReadyScheduler(sqlite),
-		webExecutor,
-		tester.NewEvidenceTester(sqlite),
-		reviewer.NewLLMReviewer(sqlite, llm, cfg.LLM.Model),
-	)
-	service.UseLLM(llm, cfg.LLM.Model)
-	service.UseCommunication(cfg.Communication.ChannelID, cfg.Communication.SessionID, commRuntime)
-
 	fullGoal := fmt.Sprintf("打开 %s，获取今日梅花易数的答案，并把答案结果发送到 channel 日志。用户目标：%s", url, goal)
-	logChannel(ctx, commRuntime, cfg, "input", fullGoal)
-	project, err := service.CreateProject(ctx, appruntime.CreateProjectRequest{
-		Name: "Web answer",
-		Goal: fullGoal,
-	})
-	if err != nil {
-		return err
-	}
-	logChannel(ctx, commRuntime, cfg, "index", fmt.Sprintf("browser_provider=%s mcp_url=%s llm_provider=%s model=%s", cfg.Browser.Provider, cfg.Browser.MCPURL, cfg.LLM.Provider, cfg.LLM.Model))
-	tasks, err := service.PlanProject(ctx, project.ID)
-	if err != nil {
-		return err
-	}
-	logChannel(ctx, commRuntime, cfg, "plan", renderTasks(tasks))
-	logChannel(ctx, commRuntime, cfg, "execute", "RunNextTask starting with browser.open -> llm.answer -> evidence tester -> llm reviewer")
-	result, err := service.RunNextTask(ctx, project.ID)
-	if err != nil {
-		return err
-	}
-	answer, err := latestAnswerObservation(ctx, sqlite, result.Attempt.ID)
-	if err != nil {
-		return err
-	}
-	logChannel(ctx, commRuntime, cfg, "output", answer.Summary)
-	logChannel(ctx, commRuntime, cfg, "events", renderEvents(result.Events))
-	return nil
+	return RunGeneric(ctx, fullGoal, opts, writer)
 }
 
 func parseAgentInput(args []string) (string, Options, error) {
@@ -609,7 +455,7 @@ func newLLMProvider(cfg appconfig.Config) (provider.LLMProvider, error) {
 	}
 	client := &http.Client{Timeout: cfg.LLM.Timeout}
 	thinking := cfg.LLM.ThinkingEnabled
-	return provider.NewRegisteredLLMProvider(cfg.LLM.Provider, provider.OpenAICompatibleConfig{
+	llm, err := provider.NewRegisteredLLMProvider(cfg.LLM.Provider, provider.OpenAICompatibleConfig{
 		APIKey:          cfg.LLM.APIKey,
 		BaseURL:         cfg.LLM.BaseURL,
 		ChatModel:       cfg.LLM.Model,
@@ -617,6 +463,10 @@ func newLLMProvider(cfg appconfig.Config) (provider.LLMProvider, error) {
 		ReasoningEffort: cfg.LLM.ReasoningEffort,
 		HTTPClient:      client,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return provider.NewTimeoutProvider(llm, cfg.LLM.Timeout), nil
 }
 
 func newBrowserRuntime(ctx context.Context, cfg appconfig.Config) (*browser.Runtime, func() error, error) {
@@ -831,266 +681,6 @@ func generateNovelistPersona(ctx context.Context, llm provider.LLMProvider, mode
 		_ = logger.Log(ctx, "persona.generate", persona)
 	}
 	return persona, nil
-}
-
-func personalSiteHTML(name string) string {
-	escapedName := htmlstd.EscapeString(strings.TrimSpace(name))
-	if escapedName == "" {
-		escapedName = "苏柯宇"
-	}
-	return `<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>` + escapedName + `</title>
-  <meta name="description" content="` + escapedName + ` 的个人网页">
-  <link rel="stylesheet" href="./styles.css">
-</head>
-<body>
-  <main>
-    <section class="intro" aria-labelledby="page-title">
-      <div class="identity-mark" aria-hidden="true">
-        <span>SKY</span>
-      </div>
-      <div class="intro-copy">
-        <p class="eyebrow">Personal Website</p>
-        <h1 id="page-title">` + escapedName + `</h1>
-        <p class="lead">把复杂想法整理成清楚的产品、代码和表达。</p>
-        <div class="actions">
-          <a href="#work">查看方向</a>
-          <a href="#contact">联系</a>
-        </div>
-      </div>
-    </section>
-
-    <section id="work" class="section">
-      <h2>关注方向</h2>
-      <div class="grid">
-        <article>
-          <span class="number">01</span>
-          <h3>AI Runtime</h3>
-          <p>关注可恢复执行、工具安全边界、上下文工程和可观测日志。</p>
-        </article>
-        <article>
-          <span class="number">02</span>
-          <h3>Product Engineering</h3>
-          <p>从真实使用场景出发，把原型、后端、前端和验证闭环连起来。</p>
-        </article>
-        <article>
-          <span class="number">03</span>
-          <h3>Creative Systems</h3>
-          <p>把写作、网页、自动化和工程工具做成可以长期迭代的系统。</p>
-        </article>
-      </div>
-    </section>
-
-    <section class="section profile">
-      <h2>工作方式</h2>
-      <p>先弄清问题，再压缩路径；先做可运行的版本，再用测试和反馈把它磨稳。</p>
-      <ul>
-        <li>偏好明确的状态机和小步验证。</li>
-        <li>重视代码可读性、日志、回滚点和交付体验。</li>
-        <li>喜欢把抽象能力落到一个能被打开、运行、检查的产物里。</li>
-      </ul>
-    </section>
-
-    <section id="contact" class="section contact">
-      <h2>联系</h2>
-      <p>适合讨论 AI 工具、个人自动化、产品原型和工程系统。</p>
-      <a href="mailto:hello@example.com">hello@example.com</a>
-    </section>
-  </main>
-</body>
-</html>
-`
-}
-
-func personalSiteCSS() string {
-	return `:root {
-  color-scheme: light;
-  --ink: #1e2528;
-  --muted: #667175;
-  --paper: #f7f4ee;
-  --panel: #ffffff;
-  --line: #d9d2c7;
-  --accent: #206a5d;
-  --accent-2: #b94f32;
-  --shadow: rgba(37, 45, 48, 0.12);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-
-* {
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-  background: var(--paper);
-  color: var(--ink);
-}
-
-a {
-  color: inherit;
-}
-
-main {
-  width: min(1120px, calc(100% - 40px));
-  margin: 0 auto;
-}
-
-.intro {
-  min-height: 78vh;
-  display: grid;
-  grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
-  gap: 56px;
-  align-items: center;
-  padding: 48px 0 40px;
-  border-bottom: 1px solid var(--line);
-}
-
-.identity-mark {
-  aspect-ratio: 4 / 5;
-  display: grid;
-  place-items: center;
-  background:
-    radial-gradient(circle at 26% 22%, rgba(255,255,255,0.88), transparent 26%),
-    linear-gradient(145deg, #174d45 0%, #206a5d 48%, #c36246 100%);
-  box-shadow: 0 24px 70px var(--shadow);
-  border: 1px solid rgba(255,255,255,0.65);
-}
-
-.identity-mark span {
-  color: #fffaf2;
-  font-size: clamp(3rem, 8vw, 7rem);
-  font-weight: 800;
-  letter-spacing: 0;
-}
-
-.eyebrow {
-  margin: 0 0 14px;
-  color: var(--accent);
-  font-size: 0.78rem;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-h1 {
-  margin: 0;
-  font-size: clamp(3.2rem, 8vw, 7.5rem);
-  line-height: 0.95;
-  letter-spacing: 0;
-}
-
-.lead {
-  max-width: 560px;
-  margin: 24px 0 0;
-  color: var(--muted);
-  font-size: 1.25rem;
-  line-height: 1.8;
-}
-
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 30px;
-}
-
-.actions a,
-.contact a {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  padding: 0 18px;
-  border: 1px solid var(--ink);
-  text-decoration: none;
-  font-weight: 700;
-}
-
-.actions a:first-child {
-  background: var(--ink);
-  color: #fff;
-}
-
-.section {
-  padding: 56px 0;
-  border-bottom: 1px solid var(--line);
-}
-
-h2 {
-  margin: 0 0 24px;
-  font-size: 1.6rem;
-  letter-spacing: 0;
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
-}
-
-article {
-  min-height: 220px;
-  padding: 22px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  box-shadow: 0 14px 35px var(--shadow);
-}
-
-.number {
-  display: block;
-  color: var(--accent-2);
-  font-weight: 800;
-  margin-bottom: 38px;
-}
-
-h3 {
-  margin: 0 0 12px;
-  font-size: 1.18rem;
-}
-
-p,
-li {
-  color: var(--muted);
-  line-height: 1.8;
-}
-
-.profile p {
-  max-width: 720px;
-  font-size: 1.1rem;
-}
-
-.profile ul {
-  margin: 22px 0 0;
-  padding-left: 22px;
-}
-
-.contact {
-  padding-bottom: 80px;
-}
-
-@media (max-width: 820px) {
-  main {
-    width: min(100% - 28px, 680px);
-  }
-
-  .intro {
-    min-height: auto;
-    grid-template-columns: 1fr;
-    gap: 32px;
-    padding-top: 28px;
-  }
-
-  .identity-mark {
-    aspect-ratio: 16 / 10;
-  }
-
-  .grid {
-    grid-template-columns: 1fr;
-  }
-}
-`
 }
 
 func storySkillSources(cfg appconfig.Config) []string {

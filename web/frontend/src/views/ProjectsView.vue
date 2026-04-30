@@ -20,11 +20,18 @@ onMounted(async () => {
 async function createProject() {
   if (!newName.value || !newGoal.value) return
   creating.value = true
-  const p = await api.createProject(newName.value, newGoal.value)
-  projects.value.unshift(p)
-  newName.value = ''
-  newGoal.value = ''
-  showCreate.value = false
+  try {
+    await api.createProject(newName.value, newGoal.value)
+    newName.value = ''
+    newGoal.value = ''
+    showCreate.value = false
+    // Refresh list after short delay to pick up newly created project
+    setTimeout(async () => {
+      projects.value = await api.listProjects()
+    }, 500)
+  } catch (err: any) {
+    alert('Failed to create project: ' + err.message)
+  }
   creating.value = false
 }
 

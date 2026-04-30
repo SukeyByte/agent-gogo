@@ -1,20 +1,80 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
-import { api } from '../api'
-import type { ChatMessage, ChainDecision } from '../api/types'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { api, createEventSource } from '../api'
+import type { ChatMessage } from '../api/types'
 
 const messages = ref<ChatMessage[]>([])
 const input = ref('')
 const sessionId = ref('sess-1')
-const chainDecision = ref<ChainDecision | null>(null)
 const sending = ref(false)
 const messagesEl = ref<HTMLElement>()
+let eventSource: EventSource | null = null
 
 onMounted(async () => {
   messages.value = await api.listChatMessages(sessionId.value)
-  chainDecision.value = await api.getChainDecision(sessionId.value)
   await nextTick()
   scrollToBottom()
+
+  // Connect SSE for real-time responses
+  eventSource = createEventSource()
+  eventSource.addEventListener('message', (e) => {
+    try {
+      const data = JSON.parse(e.data)
+      messages.value.push({
+        id: data.id || `msg-${Date.now()}`,
+        session_id: sessionId.value,
+        project_id: data.project_id || '',
+        role: 'assistant',
+        content: data.text || data.content || JSON.stringify(data),
+        artifacts: [],
+        metadata: data,
+        created_at: new Date().toISOString(),
+      })
+      nextTick(scrollToBottom)
+    } catch { /* ignore malformed SSE */ }
+  })
+  eventSource.addEventListener('done', (e) => {
+    try {
+      const data = JSON.parse(e.data)
+      messages.value.push({
+        id: data.id || `msg-${Date.now()}`,
+        session_id: sessionId.value,
+        project_id: data.project_id || '',
+        role: 'system',
+        content: data.text || data.message || 'Task completed',
+        artifacts: [],
+        metadata: data,
+        created_at: new Date().toISOString(),
+      })
+      nextTick(scrollToBottom)
+    } catch { /* ignore */ }
+  })
+  eventSource.addEventListener('confirmation', (e) => {
+    try {
+      const data = JSON.parse(e.data)
+      messages.value.push({
+        id: data.id || `msg-${Date.now()}`,
+        session_id: sessionId.value,
+        project_id: data.project_id || '',
+        role: 'system',
+        content: `Confirmation needed: ${data.text || data.message || ''}`,
+        artifacts: [],
+        metadata: { ...data, requires_confirmation: true },
+        created_at: new Date().toISOString(),
+      })
+      nextTick(scrollToBottom)
+    } catch { /* ignore */ }
+  })
+  eventSource.onerror = () => {
+    // Auto-reconnect is handled by EventSource natively
+  }
+})
+
+onUnmounted(() => {
+  if (eventSource) {
+    eventSource.close()
+    eventSource = null
+  }
 })
 
 function scrollToBottom() {
@@ -34,11 +94,45 @@ async function send() {
   await nextTick()
   scrollToBottom()
 
-  const reply = await api.sendChatMessage(sessionId.value, content)
-  messages.value.push(reply)
-  await nextTick()
-  scrollToBottom()
+  try {
+    await api.sendChatMessage(sessionId.value, content)
+  } catch (err: any) {
+    messages.value.push({
+      id: `msg-${Date.now()}`, session_id: sessionId.value, project_id: '', role: 'system',
+      content: `Failed to send: ${err.message}`, artifacts: [], metadata: {}, created_at: new Date().toISOString(),
+    })
+    nextTick(scrollToBottom)
+  }
   sending.value = false
+}
+
+async function confirmAction(msg: ChatMessage, approved: boolean) {
+  const meta = msg.metadata || {}
+  try {
+    await api.sendConfirmation(
+      meta.project_id || '',
+      meta.task_id || '',
+      meta.attempt_id || '',
+      meta.action_id || '',
+      approved,
+      approved ? 'Approved via web console' : 'Rejected via web console',
+    )
+    // Replace the confirmation message with result
+    const idx = messages.value.indexOf(msg)
+    if (idx >= 0) {
+      messages.value[idx] = {
+        ...msg,
+        role: 'system',
+        content: approved ? 'Approved' : 'Rejected',
+        metadata: { ...meta, resolved: true },
+      }
+    }
+  } catch (err: any) {
+    messages.value.push({
+      id: `msg-${Date.now()}`, session_id: sessionId.value, project_id: '', role: 'system',
+      content: `Confirmation failed: ${err.message}`, artifacts: [], metadata: {}, created_at: new Date().toISOString(),
+    })
+  }
 }
 
 const roleColor: Record<string, string> = {
@@ -52,19 +146,6 @@ const roleLabel: Record<string, string> = { user: 'You', assistant: 'Agent', too
 
 <template>
   <div class="flex h-[calc(100vh-8rem)] flex-col">
-    <!-- Chain Decision Banner -->
-    <div v-if="chainDecision" class="mb-3 flex items-center gap-4 rounded-lg border border-gray-800 bg-gray-900 px-4 py-2 text-xs">
-      <span class="rounded bg-indigo-900/50 px-2 py-0.5 font-mono text-indigo-300">{{ chainDecision.level }}</span>
-      <span class="text-gray-400">{{ chainDecision.reason }}</span>
-      <div class="ml-auto flex gap-2 text-gray-500">
-        <span v-if="chainDecision.need_plan">Plan</span>
-        <span v-if="chainDecision.need_tools">Tools</span>
-        <span v-if="chainDecision.need_memory">Memory</span>
-        <span v-if="chainDecision.need_review">Review</span>
-        <span v-if="chainDecision.need_browser">Browser</span>
-      </div>
-    </div>
-
     <!-- Messages -->
     <div ref="messagesEl" class="flex-1 overflow-y-auto space-y-4 mb-4">
       <div
@@ -82,8 +163,14 @@ const roleLabel: Record<string, string> = { user: 'You', assistant: 'Agent', too
         <div v-if="msg.artifacts?.length" class="mt-2 flex gap-2">
           <span v-for="a in msg.artifacts" :key="a" class="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-400">📎 {{ a }}</span>
         </div>
+        <!-- Confirmation buttons -->
+        <div v-if="msg.metadata?.requires_confirmation && !msg.metadata?.resolved" class="mt-3 flex gap-2">
+          <button @click="confirmAction(msg, true)" class="rounded bg-green-700 px-3 py-1.5 text-xs text-white hover:bg-green-600">Approve</button>
+          <button @click="confirmAction(msg, false)" class="rounded bg-red-700 px-3 py-1.5 text-xs text-white hover:bg-red-600">Reject</button>
+        </div>
+        <div v-if="msg.metadata?.resolved" class="mt-1 text-xs text-gray-600">Resolved</div>
       </div>
-      <div v-if="sending" class="text-sm text-gray-500 animate-pulse">Agent is thinking...</div>
+      <div v-if="sending" class="text-sm text-gray-500 animate-pulse">Sending...</div>
     </div>
 
     <!-- Input -->

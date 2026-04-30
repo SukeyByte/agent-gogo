@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -277,6 +278,67 @@ func TestServiceRetriesFailedTaskThroughRuntimeAPI(t *testing.T) {
 	}
 }
 
+func TestServiceMarksTestingTaskFailedBeforeRepair(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	service := NewServiceWithComponents(
+		sqlite,
+		dependencyPlanner{},
+		validator.NewMinimalTaskValidator(),
+		scheduler.NewReadyScheduler(sqlite),
+		executor.NewMinimalExecutor(sqlite),
+		failingTester{store: sqlite},
+		reviewer.NewMinimalReviewer(sqlite),
+	)
+	project, err := service.CreateProject(ctx, CreateProjectRequest{Name: "repair", Goal: "repair failed tester"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	tasks, err := service.PlanProject(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("plan project: %v", err)
+	}
+	_, err = service.RunNextTask(ctx, project.ID)
+	if err == nil {
+		t.Fatal("expected tester failure")
+	}
+	failed, err := sqlite.GetTask(ctx, tasks[0].ID)
+	if err != nil {
+		t.Fatalf("get original task: %v", err)
+	}
+	if failed.Status != domain.TaskStatusFailed {
+		t.Fatalf("expected original task to be FAILED, got %s", failed.Status)
+	}
+	allTasks, err := sqlite.ListTasksByProject(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	foundRepair := false
+	for _, task := range allTasks {
+		if strings.HasPrefix(task.Title, "Fix: ") && task.Status == domain.TaskStatusReady {
+			foundRepair = true
+		}
+	}
+	if !foundRepair {
+		t.Fatalf("expected ready repair task, got %#v", allTasks)
+	}
+}
+
+func TestLimitContextTextAppliesRuntimeBudget(t *testing.T) {
+	got := limitContextText("abcdefghijklmnopqrstuvwxyz", 18)
+	if len(got) != 18 {
+		t.Fatalf("expected budgeted text length 18, got %d: %q", len(got), got)
+	}
+	if got == "abcdefghijklmnopqrstuvwxyz" {
+		t.Fatal("expected context text to be truncated")
+	}
+}
+
 type dependencyPlanner struct{}
 
 func (p dependencyPlanner) PlanProject(ctx context.Context, req planner.PlanRequest) ([]domain.Task, error) {
@@ -305,6 +367,25 @@ func (p dependencyPlanner) PlanProject(ctx context.Context, req planner.PlanRequ
 type contextRecordingExecutor struct {
 	store    executor.Store
 	contexts map[string]string
+}
+
+type failingTester struct {
+	store tester.Store
+}
+
+func (t failingTester) Test(ctx context.Context, task domain.Task, attempt domain.TaskAttempt) (tester.Result, error) {
+	if _, err := t.store.TransitionTask(ctx, task.ID, domain.TaskStatusTesting, "failing tester started"); err != nil {
+		return tester.Result{}, err
+	}
+	if _, err := t.store.CreateTestResult(ctx, domain.TestResult{
+		AttemptID: attempt.ID,
+		Name:      "forced-failure",
+		Status:    domain.TestStatusFailed,
+		Output:    "forced tester failure",
+	}); err != nil {
+		return tester.Result{}, err
+	}
+	return tester.Result{}, errors.New("forced tester failure")
 }
 
 func (e *contextRecordingExecutor) UseRuntimeContext(projectID string, contextText string) {

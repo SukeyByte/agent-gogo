@@ -17,8 +17,8 @@ const actionLoading = ref<string | null>(null)
 onMounted(async () => {
   const [p, t, a] = await Promise.all([api.getProject(projectId), api.listTasks(projectId), api.listArtifacts(projectId)])
   project.value = p
-  tasks.value = t
-  artifacts.value = a
+  tasks.value = t || []
+  artifacts.value = a || []
   loading.value = false
 })
 
@@ -73,7 +73,7 @@ const taskTypeIcon: Record<string, string> = {
             <div class="text-xs text-gray-500 truncate">{{ task.description }}</div>
           </div>
           <div class="flex items-center gap-2">
-            <span v-if="task.depends_on.length" class="text-xs text-gray-600">depends: {{ task.depends_on.length }}</span>
+            <span v-if="task.depends_on?.length" class="text-xs text-gray-600">depends: {{ task.depends_on.length }}</span>
             <StatusBadge :status="task.status" />
           </div>
         </RouterLink>
