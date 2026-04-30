@@ -454,6 +454,24 @@ M1 和 M3 是执行系统的骨架，必须保持简单、可测、可恢复。M
 
 目标：把 `internal/capability` 真正接进 Validator 和 Planner 输出校验，在规划期检查任务所需 capability 是否存在、可用、需确认或被策略禁用，并在缺能力时明确 ask user / degrade / block。
 
+当前状态：已完成 M10.2 的硬化补丁。当前基线已包含外置 prompt、provider timeout、ContextMaxChars、CapabilityTaskValidator、code index cache、GenericEvidenceTester / EvidenceReviewer 默认链路、TESTING/REVIEWING 失败转 FAILED 修复、demo 入口委托 Generic 路径。本次补丁继续补强两处执行硬边界：研究/调研任务必须有真实 discovery tool 成功证据，code index cache 只在写入/patch 后失效，读取文件不再误清缓存。
+
+范围：
+
+1. Capability Resolver 通过 `CapabilityTaskValidator` 接入 CLI/Web 主路径，在规划任务进入 READY 前校验 browser/read/write/execute/verify/memory 等能力可用性。
+2. 研究/调研类任务的验收不再只听模型声明；Tester 要求成功调用 `code.index`、`code.search`、`code.symbols`、`file.read`、`browser.open`、`browser.extract`、`browser.dom_summary`、`git.status` 或 `git.diff` 之一。
+3. code index cache 对 `code.index` / `code.symbols` 复用仓库索引；`file.read` 不清缓存，`file.write` / `file.patch` 清缓存。
+4. 保留 M10.1 的 DeepSeek code / web / document 三方向 smoke，验证规划仍能生成研究与反思任务。
+5. 记录 M10.2 结果文档，避免验收只停留在口头状态。
+
+验收标准：
+
+1. `go test ./internal/tester` 通过，证明研究任务必须有真实 discovery tool evidence。
+2. `go test ./internal/tools` 通过，证明 code index cache 命中与失效边界正确。
+3. `go test ./internal/validator ./internal/runtime` 通过，证明 capability validator 和失败修复链路仍可用。
+4. `RUN_DEEPSEEK_SMOKE=1 DEEPSEEK_API_KEY=... go test ./internal/planner -run TestDeepSeekPlannerStructuredSmoke -count=1 -v` 通过，覆盖 code / web / document 三类真实 LLM 规划。
+5. `go test ./...` 通过。
+
 ### M10.3：Hard Observer + Acceptance Checks
 
 目标：补强 Observer / State Interpreter，让工具结果能转成更硬的状态证据，包括文件 diff 是否真实存在、测试失败原因、浏览器页面是否满足目标、文档产物是否包含目标内容，以及 reviewer 可引用的机械断言。

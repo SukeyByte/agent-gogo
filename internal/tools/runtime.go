@@ -154,7 +154,6 @@ func NewBuiltinRuntime(store Store, root string) *Runtime {
 		if err != nil {
 			return Result{Success: false, Error: err.Error()}, err
 		}
-		runtime.invalidateCodeIndex(root)
 		ref, _ := output["path"].(string)
 		return Result{Success: true, Output: output, EvidenceRef: ref}, nil
 	})
@@ -180,6 +179,7 @@ func NewBuiltinRuntime(store Store, root string) *Runtime {
 		if err != nil {
 			return Result{Success: false, Error: err.Error()}, err
 		}
+		runtime.invalidateCodeIndex(root)
 		ref, _ := output["path"].(string)
 		return Result{Success: true, Output: output, EvidenceRef: ref}, nil
 	})

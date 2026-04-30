@@ -320,6 +320,46 @@ func TestBuiltinRuntimeFileAndCodeTools(t *testing.T) {
 	}
 }
 
+func TestBuiltinRuntimeCodeIndexCacheInvalidatesOnlyOnWrites(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "internal"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "internal", "sample.go"), []byte("package internal\n\nfunc BuildWidget() {}\n"), 0o644); err != nil {
+		t.Fatalf("write sample: %v", err)
+	}
+	runtime := NewBuiltinRuntime(nil, root)
+
+	first, err := runtime.Call(ctx, CallRequest{Name: "code.index"})
+	if err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+	if first.Result.Output["cache_hit"].(bool) {
+		t.Fatal("expected cold cache on first index")
+	}
+	if _, err := runtime.Call(ctx, CallRequest{Name: "file.read", Args: map[string]any{"path": "internal/sample.go"}}); err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	afterRead, err := runtime.Call(ctx, CallRequest{Name: "code.index"})
+	if err != nil {
+		t.Fatalf("index after read: %v", err)
+	}
+	if !afterRead.Result.Output["cache_hit"].(bool) {
+		t.Fatal("expected file.read not to invalidate code index cache")
+	}
+	if _, err := runtime.Call(ctx, CallRequest{Name: "file.patch", Args: map[string]any{"path": "internal/sample.go", "old": "BuildWidget", "new": "MakeWidget"}}); err != nil {
+		t.Fatalf("patch file: %v", err)
+	}
+	afterPatch, err := runtime.Call(ctx, CallRequest{Name: "code.index"})
+	if err != nil {
+		t.Fatalf("index after patch: %v", err)
+	}
+	if afterPatch.Result.Output["cache_hit"].(bool) {
+		t.Fatal("expected file.patch to invalidate code index cache")
+	}
+}
+
 func TestBuiltinRuntimeBlocksGitInternalsForFileTools(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

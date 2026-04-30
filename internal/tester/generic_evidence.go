@@ -78,6 +78,7 @@ func genericEvidenceFailure(task domain.Task, observations []domain.Observation,
 	hasStateEvidence := false
 	hasTestRun := false
 	hasTestsPassed := false
+	hasResearchToolEvidence := false
 	successfulCalls := 0
 	for _, observation := range observations {
 		switch observation.Type {
@@ -98,6 +99,9 @@ func genericEvidenceFailure(task domain.Task, observations []domain.Observation,
 	for _, call := range calls {
 		if call.Status == domain.ToolCallStatusSucceeded {
 			successfulCalls++
+			if isResearchEvidenceTool(call.Name) {
+				hasResearchToolEvidence = true
+			}
 		}
 		if call.Name == "test.run" {
 			hasTestRun = true
@@ -121,7 +125,40 @@ func genericEvidenceFailure(task domain.Task, observations []domain.Observation,
 	if taskRequiresDiagnosticTestRun(task) && !hasTestRun {
 		return "task acceptance requires test.run evidence"
 	}
+	if taskRequiresResearchEvidence(task) && !hasResearchToolEvidence {
+		return "research task requires successful discovery tool evidence"
+	}
 	return ""
+}
+
+func taskRequiresResearchEvidence(task domain.Task) bool {
+	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
+	for _, marker := range []string{
+		"研究上下文",
+		"可用资料",
+		"收集完成任务所需的事实",
+		"context-gathering",
+		"context gathering",
+		"research",
+		"grounding",
+		"读取 readme",
+		"获取当前",
+		"读取项目",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isResearchEvidenceTool(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "code.index", "code.search", "code.symbols", "file.read", "browser.open", "browser.extract", "browser.dom_summary", "git.status", "git.diff":
+		return true
+	default:
+		return false
+	}
 }
 
 func taskRequiresPassingTests(task domain.Task) bool {

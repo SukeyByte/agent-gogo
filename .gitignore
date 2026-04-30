@@ -7,7 +7,9 @@ config.yaml
 # Runtime data
 data/
 artifacts/
-docs/results/
+docs/results/*
+!docs/results/m10_2_*.md
+!docs/results/m10_4_webconsole_channel_result.md
 *.db
 *.db-shm
 *.db-wal
@@ -23,6 +25,7 @@ coverage.*
 node_modules/
 web/dist/
 web/.vite/
+*.tsbuildinfo
 
 # Editor and OS files
 .DS_Store

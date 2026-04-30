@@ -65,6 +65,56 @@ func TestGenericEvidenceTesterRequiresTestRunWhenAcceptanceMentionsTests(t *test
 	}
 }
 
+func TestGenericEvidenceTesterRequiresDiscoveryToolForResearchTask(t *testing.T) {
+	ctx := context.Background()
+	sqlite, _, task, attempt := genericEvidenceFixture(t)
+	defer sqlite.Close()
+	task.Title = "研究上下文与可用资料"
+	task.Description = "先读取、搜索或浏览必要资料，确认任务事实。"
+	task.AcceptanceCriteria = []string{"已用可用工具收集完成任务所需的事实和上下文"}
+
+	if _, err := sqlite.CreateObservation(ctx, domain.Observation{AttemptID: attempt.ID, Type: "state.file_changed", Summary: "wrote file"}); err != nil {
+		t.Fatalf("state observation: %v", err)
+	}
+	if _, err := sqlite.CreateObservation(ctx, domain.Observation{AttemptID: attempt.ID, Type: "agent.finish", Summary: "done"}); err != nil {
+		t.Fatalf("finish observation: %v", err)
+	}
+	if _, err := sqlite.CreateToolCall(ctx, domain.ToolCall{AttemptID: attempt.ID, Name: "file.write", Status: domain.ToolCallStatusSucceeded}); err != nil {
+		t.Fatalf("tool call: %v", err)
+	}
+	tester := NewGenericEvidenceTester(sqlite)
+	if _, err := tester.Test(ctx, task, attempt); err == nil {
+		t.Fatal("expected research task without discovery tool to fail")
+	}
+}
+
+func TestGenericEvidenceTesterAcceptsDiscoveryToolForResearchTask(t *testing.T) {
+	ctx := context.Background()
+	sqlite, _, task, attempt := genericEvidenceFixture(t)
+	defer sqlite.Close()
+	task.Title = "研究上下文与可用资料"
+	task.Description = "先读取、搜索或浏览必要资料，确认任务事实。"
+	task.AcceptanceCriteria = []string{"已用可用工具收集完成任务所需的事实和上下文"}
+
+	if _, err := sqlite.CreateObservation(ctx, domain.Observation{AttemptID: attempt.ID, Type: "state.repository_observed", Summary: "indexed repo"}); err != nil {
+		t.Fatalf("state observation: %v", err)
+	}
+	if _, err := sqlite.CreateObservation(ctx, domain.Observation{AttemptID: attempt.ID, Type: "agent.finish", Summary: "done"}); err != nil {
+		t.Fatalf("finish observation: %v", err)
+	}
+	if _, err := sqlite.CreateToolCall(ctx, domain.ToolCall{AttemptID: attempt.ID, Name: "code.index", Status: domain.ToolCallStatusSucceeded}); err != nil {
+		t.Fatalf("tool call: %v", err)
+	}
+	tester := NewGenericEvidenceTester(sqlite)
+	result, err := tester.Test(ctx, task, attempt)
+	if err != nil {
+		t.Fatalf("expected research evidence to pass: %v", err)
+	}
+	if result.TestResult.Status != domain.TestStatusPassed {
+		t.Fatalf("expected passed, got %s", result.TestResult.Status)
+	}
+}
+
 func TestTaskRequiresTestsIgnoresReadingTestFiles(t *testing.T) {
 	task := domain.Task{
 		Title:              "读取项目结构和测试文件",
