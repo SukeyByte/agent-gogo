@@ -260,6 +260,7 @@ M1 domain + store
   -> M7 story workflow integration
   -> M8 code runtime + engineering tools
   -> W9 task awareness + generic agent memory
+  -> M10 generic agent loop
 ```
 
 M1 和 M3 是执行系统的骨架，必须保持简单、可测、可恢复。M2 决定后续 Function、Skill、Persona、Memory 是否能保持低成本和缓存友好。M4 和 M5 负责把能力调用和用户通讯从 Runtime Core 中解耦。M6 只在接口稳定后接入真实外部系统。
@@ -410,3 +411,49 @@ M1 和 M3 是执行系统的骨架，必须保持简单、可测、可恢复。M
 2. 不实现长期跨仓库用户画像。
 3. 不把所有历史原文塞进上下文；只注入摘要、证据引用和可追溯 memory。
 4. 不引入新的外部服务。
+
+---
+
+## M10：Generic Agent Loop
+
+目标：把 W9 之后的 Runtime 零件收敛成真正的通用执行脑，让代码任务、网页任务、文档任务都走同一套“结构化规划 -> 能力/工具选择 -> action loop -> Observer -> Tester/Reviewer -> 修复或完成”的主路径，而不是依赖关键词 demo workflow。
+
+当前状态：M10.1 已落地并通过本地测试和 DeepSeek 真实 smoke。主路径已经具备结构化 JSON 请求、schema repair、DeepSeek `json_schema` 不可用时的 `json_object` 降级、Provider Registry、规划前研究/反思任务注入、Executor 工具别名归一、重复 action fingerprint guard、只读文件任务 auto-finish，以及代码修改任务的机械验收防早停。
+
+### M10.1：Structured Output + Progress Guard
+
+范围：
+
+1. 为 `ChatRequest` 增加 `response_format`、JSON schema、tool schema 和 temperature 字段。
+2. OpenAI-compatible provider 透传结构化输出和 tool schema；DeepSeek 不支持 `json_schema` 时自动降级到 `json_object`，schema 继续进入 prompt。
+3. 新增统一 `llmjson.ChatObject`，所有 router / intent / planner / executor / reviewer 的 JSON 输出都走结构化请求和一次 schema repair。
+4. Planner 对中高复杂度、代码、网页、文档、调试、修复类任务强制补“研究上下文与可用资料”和“反思任务拆解与验收口径”任务，避免无资料直接猜测拆解。
+5. GenericExecutor 只接受可用工具和常见别名归一后的工具名，并把 `read_file` / `write_file` / `edit_file` / `run_tests` 等概念名映射到真实 tool。
+6. GenericExecutor 增加 action fingerprint guard，同一 tool + args 重复超过阈值时阻断，避免一直读同一文件耗到 max-step。
+7. 只读文件任务在 `file.read` 成功后可以机械 auto-finish；代码修改任务如果 acceptance 提到 gofmt、compile、build、syntax、lint、signature 等机械验收，不允许仅凭 patch 过早完成。
+8. 新增默认跳过的 DeepSeek smoke test，用真实 LLM 跑代码、网页、文档三类规划验收。
+
+验收标准：
+
+1. `go test ./...` 通过。
+2. `RUN_DEEPSEEK_SMOKE=1 DEEPSEEK_API_KEY=... go test ./internal/planner -run TestDeepSeekPlannerStructuredSmoke -count=1 -v` 通过，且覆盖 code / web / document 三类规划。
+3. DeepSeek 不支持 `response_format.type=json_schema` 时，Runtime 自动降级并继续完成结构化 JSON 解析。
+4. Planner 生成的复杂任务 DAG 必须先有研究任务，再有反思任务，后续实现任务依赖反思任务。
+5. Executor 遇到重复 action 会记录 rejected event，并允许模型改走有进展的下一步。
+6. 读取文件类任务不再完全依赖模型自称 finish。
+7. 有明确机械验收要求的代码任务不能仅凭 `file.patch` / `file.write` 进入 implemented。
+
+非目标：
+
+1. 不在 M10.1 完整替换 Validator 的能力校验；Capability Resolver 接入规划期校验留到 M10.2。
+2. 不完成完整 Web Console 操作台；M10.1 只处理 Generic Agent Loop 的协议和执行保护。
+3. 不清理所有 demo workflow；旧 workflow 保留为兼容和回归样本，主路径继续收敛到 GenericExecutor。
+4. 不把 Reviewer / Tester 升级成完整语义断言系统；M10.1 只补关键机械证据门槛。
+
+### M10.2：Capability Resolver + Validator Gate
+
+目标：把 `internal/capability` 真正接进 Validator 和 Planner 输出校验，在规划期检查任务所需 capability 是否存在、可用、需确认或被策略禁用，并在缺能力时明确 ask user / degrade / block。
+
+### M10.3：Hard Observer + Acceptance Checks
+
+目标：补强 Observer / State Interpreter，让工具结果能转成更硬的状态证据，包括文件 diff 是否真实存在、测试失败原因、浏览器页面是否满足目标、文档产物是否包含目标内容，以及 reviewer 可引用的机械断言。

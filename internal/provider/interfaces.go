@@ -8,15 +8,36 @@ type ChatMessage struct {
 }
 
 type ChatRequest struct {
-	Model    string
-	Messages []ChatMessage
-	Metadata map[string]string
+	Model          string
+	Messages       []ChatMessage
+	Metadata       map[string]string
+	ResponseFormat *ResponseFormat
+	Tools          []ChatTool
+	Temperature    *float64
 }
 
 type ChatResponse struct {
 	Model string
 	Text  string
 	Usage map[string]int
+}
+
+type ResponseFormat struct {
+	Type       string
+	JSONSchema *JSONSchemaFormat
+}
+
+type JSONSchemaFormat struct {
+	Name        string
+	Description string
+	Schema      map[string]any
+	Strict      bool
+}
+
+type ChatTool struct {
+	Name        string
+	Description string
+	InputSchema map[string]any
 }
 
 type LLMProvider interface {

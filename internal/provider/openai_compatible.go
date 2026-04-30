@@ -81,6 +81,15 @@ func (p *OpenAICompatibleProvider) Chat(ctx context.Context, req ChatRequest) (C
 		Messages: make([]chatCompletionMessage, 0, len(req.Messages)),
 		Stream:   false,
 	}
+	if req.ResponseFormat != nil {
+		payload.ResponseFormat = responseFormatFromRequest(req.ResponseFormat)
+	}
+	if req.Temperature != nil {
+		payload.Temperature = req.Temperature
+	}
+	if len(req.Tools) > 0 {
+		payload.Tools = toolsFromRequest(req.Tools)
+	}
 	if p.thinkingEnabled != nil {
 		payload.Thinking = &thinkingConfig{Type: thinkingType(*p.thinkingEnabled)}
 	}
@@ -145,7 +154,33 @@ type chatCompletionRequest struct {
 	Messages        []chatCompletionMessage `json:"messages"`
 	Thinking        *thinkingConfig         `json:"thinking,omitempty"`
 	ReasoningEffort string                  `json:"reasoning_effort,omitempty"`
+	ResponseFormat  *chatResponseFormat     `json:"response_format,omitempty"`
+	Tools           []chatTool              `json:"tools,omitempty"`
+	Temperature     *float64                `json:"temperature,omitempty"`
 	Stream          bool                    `json:"stream"`
+}
+
+type chatResponseFormat struct {
+	Type       string                `json:"type"`
+	JSONSchema *chatJSONSchemaFormat `json:"json_schema,omitempty"`
+}
+
+type chatJSONSchemaFormat struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Schema      map[string]any `json:"schema,omitempty"`
+	Strict      *bool          `json:"strict,omitempty"`
+}
+
+type chatTool struct {
+	Type     string           `json:"type"`
+	Function chatToolFunction `json:"function"`
+}
+
+type chatToolFunction struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
 type thinkingConfig struct {
@@ -155,6 +190,45 @@ type thinkingConfig struct {
 type chatCompletionMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+func responseFormatFromRequest(format *ResponseFormat) *chatResponseFormat {
+	if format == nil {
+		return nil
+	}
+	out := &chatResponseFormat{Type: strings.TrimSpace(format.Type)}
+	if out.Type == "" {
+		out.Type = "text"
+	}
+	if format.JSONSchema != nil {
+		strict := format.JSONSchema.Strict
+		out.JSONSchema = &chatJSONSchemaFormat{
+			Name:        strings.TrimSpace(format.JSONSchema.Name),
+			Description: strings.TrimSpace(format.JSONSchema.Description),
+			Schema:      format.JSONSchema.Schema,
+			Strict:      &strict,
+		}
+	}
+	return out
+}
+
+func toolsFromRequest(tools []ChatTool) []chatTool {
+	out := make([]chatTool, 0, len(tools))
+	for _, tool := range tools {
+		name := strings.TrimSpace(tool.Name)
+		if name == "" {
+			continue
+		}
+		out = append(out, chatTool{
+			Type: "function",
+			Function: chatToolFunction{
+				Name:        name,
+				Description: strings.TrimSpace(tool.Description),
+				Parameters:  tool.InputSchema,
+			},
+		})
+	}
+	return out
 }
 
 type chatCompletionResponse struct {

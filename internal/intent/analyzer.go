@@ -9,6 +9,7 @@ import (
 
 	"github.com/sukeke/agent-gogo/internal/chain"
 	"github.com/sukeke/agent-gogo/internal/contextbuilder"
+	"github.com/sukeke/agent-gogo/internal/llmjson"
 	"github.com/sukeke/agent-gogo/internal/provider"
 	"github.com/sukeke/agent-gogo/internal/textutil"
 )
@@ -50,20 +51,20 @@ func (a *LLMAnalyzer) Analyze(ctx context.Context, req Request) (Profile, error)
 	if err != nil {
 		return Profile{}, err
 	}
-	resp, err := a.llm.Chat(ctx, provider.ChatRequest{
-		Model: a.model,
-		Messages: []provider.ChatMessage{
-			{Role: "system", Content: intentSystemPrompt},
-			{Role: "user", Content: string(payload)},
-		},
-	})
-	if err != nil {
+	var wire intentProfileWire
+	if err := llmjson.ChatObject(ctx, llmjson.Request{
+		LLM:        a.llm,
+		Model:      a.model,
+		System:     intentSystemPrompt,
+		User:       string(payload),
+		SchemaName: "intent_profile",
+		Schema:     intentProfileSchema(),
+		Metadata:   map[string]string{"stage": "intent.analyze"},
+		MaxRepairs: 1,
+	}, &wire); err != nil {
 		return Profile{}, err
 	}
-	var profile Profile
-	if err := decodeProfileJSONObject(resp.Text, &profile); err != nil {
-		return Profile{}, err
-	}
+	profile := profileFromWire(wire)
 	if profile.TaskType == "" {
 		return Profile{}, errors.New("intent task_type is required")
 	}
@@ -96,20 +97,27 @@ task_type, complexity, domains, required_capabilities, risk_level, needs_user_co
 Keep the answer small and do not include tool schemas. Do not include markdown.`
 
 func decodeProfileJSONObject(text string, target *Profile) error {
-	var wire struct {
-		TaskType              any `json:"task_type"`
-		Complexity            any `json:"complexity"`
-		Domains               any `json:"domains"`
-		RequiredCapabilities  any `json:"required_capabilities"`
-		RiskLevel             any `json:"risk_level"`
-		NeedsUserConfirmation any `json:"needs_user_confirmation"`
-		GroundingRequirement  any `json:"grounding_requirement"`
-		Confidence            any `json:"confidence"`
-	}
+	var wire intentProfileWire
 	if err := textutil.DecodeJSONObject(text, &wire); err != nil {
 		return err
 	}
-	*target = Profile{
+	*target = profileFromWire(wire)
+	return nil
+}
+
+type intentProfileWire struct {
+	TaskType              any `json:"task_type"`
+	Complexity            any `json:"complexity"`
+	Domains               any `json:"domains"`
+	RequiredCapabilities  any `json:"required_capabilities"`
+	RiskLevel             any `json:"risk_level"`
+	NeedsUserConfirmation any `json:"needs_user_confirmation"`
+	GroundingRequirement  any `json:"grounding_requirement"`
+	Confidence            any `json:"confidence"`
+}
+
+func profileFromWire(wire intentProfileWire) Profile {
+	return Profile{
 		TaskType:              textValue(wire.TaskType),
 		Complexity:            textValue(wire.Complexity),
 		Domains:               stringList(wire.Domains),
@@ -119,7 +127,6 @@ func decodeProfileJSONObject(text string, target *Profile) error {
 		GroundingRequirement:  groundingRequirementString(wire.GroundingRequirement),
 		Confidence:            floatValue(wire.Confidence),
 	}
-	return nil
 }
 
 func groundingRequirementString(value any) string {
@@ -133,6 +140,8 @@ func groundingRequirementString(value any) string {
 		return "none"
 	case nil:
 		return ""
+	case []any, []string:
+		return strings.Join(stringList(typed), ", ")
 	default:
 		return strings.TrimSpace(strings.Trim(fmt.Sprint(typed), `"`))
 	}
@@ -204,4 +213,35 @@ func floatValue(value any) float64 {
 	default:
 		return 0
 	}
+}
+
+func intentProfileSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"required": []string{
+			"task_type",
+			"complexity",
+			"domains",
+			"required_capabilities",
+			"risk_level",
+			"needs_user_confirmation",
+			"grounding_requirement",
+			"confidence",
+		},
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"task_type":               map[string]any{"type": "string"},
+			"complexity":              map[string]any{"type": "string"},
+			"domains":                 arraySchema("string"),
+			"required_capabilities":   arraySchema("string"),
+			"risk_level":              map[string]any{"type": "string", "enum": []string{"low", "medium", "high", "critical"}},
+			"needs_user_confirmation": map[string]any{"type": "boolean"},
+			"grounding_requirement":   map[string]any{"type": "string"},
+			"confidence":              map[string]any{"type": "number"},
+		},
+	}
+}
+
+func arraySchema(itemType string) map[string]any {
+	return map[string]any{"type": "array", "items": map[string]any{"type": itemType}}
 }

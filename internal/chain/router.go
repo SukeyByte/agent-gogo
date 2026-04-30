@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/sukeke/agent-gogo/internal/llmjson"
 	"github.com/sukeke/agent-gogo/internal/provider"
 )
 
@@ -61,20 +62,21 @@ func (r *LLMRouter) Route(ctx context.Context, req Request) (Decision, error) {
 	if err != nil {
 		return Decision{}, err
 	}
-	resp, err := r.llm.Chat(ctx, provider.ChatRequest{
-		Model: r.model,
-		Messages: []provider.ChatMessage{
-			{Role: "system", Content: routeSystemPrompt},
-			{Role: "user", Content: string(payload)},
-		},
-	})
+	var wire routeDecisionWire
+	err = llmjson.ChatObject(ctx, llmjson.Request{
+		LLM:        r.llm,
+		Model:      r.model,
+		System:     routeSystemPrompt,
+		User:       string(payload),
+		SchemaName: "chain_router_decision",
+		Schema:     routeDecisionSchema(),
+		Metadata:   map[string]string{"stage": "chain.router"},
+		MaxRepairs: 1,
+	}, &wire)
 	if err != nil {
 		return Decision{}, err
 	}
-	decision, err := decodeDecisionJSONObject(resp.Text)
-	if err != nil {
-		return Decision{}, err
-	}
+	decision := decisionFromWire(wire)
 	if decision.Level == "" {
 		return Decision{}, errors.New("chain decision level is required")
 	}
@@ -90,24 +92,30 @@ func normalizeDecision(decision Decision) Decision {
 }
 
 func decodeDecisionJSONObject(text string) (Decision, error) {
-	var wire struct {
-		Level       Level  `json:"level"`
-		Reason      string `json:"reason"`
-		NeedPlan    any    `json:"need_plan"`
-		NeedTools   any    `json:"need_tools"`
-		NeedMemory  any    `json:"need_memory"`
-		NeedReview  any    `json:"need_review"`
-		NeedBrowser any    `json:"need_browser"`
-		NeedCode    any    `json:"need_code"`
-		NeedDocs    any    `json:"need_docs"`
-		PersonaIDs  any    `json:"persona_ids"`
-		SkillTags   any    `json:"skill_tags"`
-		ToolNames   any    `json:"tool_names"`
-		RiskLevel   any    `json:"risk_level"`
-	}
+	var wire routeDecisionWire
 	if err := decodeJSONObject(text, &wire); err != nil {
 		return Decision{}, err
 	}
+	return decisionFromWire(wire), nil
+}
+
+type routeDecisionWire struct {
+	Level       Level  `json:"level"`
+	Reason      string `json:"reason"`
+	NeedPlan    any    `json:"need_plan"`
+	NeedTools   any    `json:"need_tools"`
+	NeedMemory  any    `json:"need_memory"`
+	NeedReview  any    `json:"need_review"`
+	NeedBrowser any    `json:"need_browser"`
+	NeedCode    any    `json:"need_code"`
+	NeedDocs    any    `json:"need_docs"`
+	PersonaIDs  any    `json:"persona_ids"`
+	SkillTags   any    `json:"skill_tags"`
+	ToolNames   any    `json:"tool_names"`
+	RiskLevel   any    `json:"risk_level"`
+}
+
+func decisionFromWire(wire routeDecisionWire) Decision {
 	toolNames := stringList(wire.ToolNames)
 	if names := stringList(wire.NeedTools); len(toolNames) == 0 && len(names) > 0 {
 		toolNames = names
@@ -126,7 +134,7 @@ func decodeDecisionJSONObject(text string) (Decision, error) {
 		SkillTags:   stringList(wire.SkillTags),
 		ToolNames:   toolNames,
 		RiskLevel:   riskLevelValue(wire.RiskLevel),
-	}, nil
+	}
 }
 
 func boolish(value any) bool {
@@ -204,3 +212,34 @@ level, reason, need_plan, need_tools, need_memory, need_review, need_browser, ne
 risk_level must be one of low, medium, high, critical.
 Use level L0 for direct answers, L1 for assisted single-step tasks, L2 for planned tasks, L3 for project agent tasks.
 Do not include markdown.`
+
+func routeDecisionSchema() map[string]any {
+	return objectSchema([]string{"level", "reason", "need_plan", "need_tools", "need_memory", "need_review", "need_browser", "need_code", "need_docs", "persona_ids", "skill_tags", "tool_names", "risk_level"}, map[string]any{
+		"level":        map[string]any{"type": "string", "enum": []string{"L0", "L1", "L2", "L3"}},
+		"reason":       map[string]any{"type": "string"},
+		"need_plan":    map[string]any{"type": "boolean"},
+		"need_tools":   map[string]any{"type": "boolean"},
+		"need_memory":  map[string]any{"type": "boolean"},
+		"need_review":  map[string]any{"type": "boolean"},
+		"need_browser": map[string]any{"type": "boolean"},
+		"need_code":    map[string]any{"type": "boolean"},
+		"need_docs":    map[string]any{"type": "boolean"},
+		"persona_ids":  arraySchema("string"),
+		"skill_tags":   arraySchema("string"),
+		"tool_names":   arraySchema("string"),
+		"risk_level":   map[string]any{"type": "string", "enum": []string{"low", "medium", "high", "critical"}},
+	})
+}
+
+func objectSchema(required []string, properties map[string]any) map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"required":             required,
+		"properties":           properties,
+		"additionalProperties": false,
+	}
+}
+
+func arraySchema(itemType string) map[string]any {
+	return map[string]any{"type": "array", "items": map[string]any{"type": itemType}}
+}

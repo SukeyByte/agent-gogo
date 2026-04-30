@@ -10,6 +10,9 @@ import (
 
 func TestLLMAnalyzerUsesProviderJSON(t *testing.T) {
 	llm := provider.ChatFunc(func(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+		if req.ResponseFormat == nil || req.ResponseFormat.Type != "json_schema" {
+			t.Fatalf("expected structured response format, got %#v", req.ResponseFormat)
+		}
 		return provider.ChatResponse{
 			Model: req.Model,
 			Text: `{
@@ -42,5 +45,25 @@ func TestLLMAnalyzerUsesProviderJSON(t *testing.T) {
 	}
 	if profile.ContextProfile().GroundingRequirement != "tests" {
 		t.Fatalf("expected context profile grounding")
+	}
+}
+
+func TestGroundingRequirementArrayIsJoinedWithoutGoSliceFormatting(t *testing.T) {
+	var profile Profile
+	err := decodeProfileJSONObject(`{
+		"task_type":"code",
+		"complexity":"medium",
+		"domains":["go"],
+		"required_capabilities":["file.read"],
+		"risk_level":"low",
+		"needs_user_confirmation":false,
+		"grounding_requirement":["read_file","edit_file"],
+		"confidence":0.8
+	}`, &profile)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if profile.GroundingRequirement != "read_file, edit_file" {
+		t.Fatalf("unexpected grounding requirement %q", profile.GroundingRequirement)
 	}
 }

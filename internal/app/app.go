@@ -608,38 +608,15 @@ func newLLMProvider(cfg appconfig.Config) (provider.LLMProvider, error) {
 		return nil, err
 	}
 	client := &http.Client{Timeout: cfg.LLM.Timeout}
-	switch strings.ToLower(cfg.LLM.Provider) {
-	case "deepseek":
-		thinking := cfg.LLM.ThinkingEnabled
-		return provider.NewDeepSeekProvider(provider.DeepSeekConfig{
-			APIKey:           cfg.LLM.APIKey,
-			BaseURL:          cfg.LLM.BaseURL,
-			ChatModel:        cfg.LLM.Model,
-			ThinkingEnabled:  &thinking,
-			ReasoningEffort:  cfg.LLM.ReasoningEffort,
-			HTTPClient:       client,
-			DefaultBaseURL:   provider.DefaultDeepSeekBaseURL,
-			DefaultChatModel: provider.DefaultDeepSeekModel,
-		})
-	case "openai":
-		return provider.NewOpenAIProvider(provider.OpenAIConfig{
-			APIKey:     cfg.LLM.APIKey,
-			BaseURL:    cfg.LLM.BaseURL,
-			ChatModel:  cfg.LLM.Model,
-			HTTPClient: client,
-		})
-	case "openai_compatible":
-		return provider.NewOpenAICompatibleProvider(provider.OpenAICompatibleConfig{
-			ProviderName:    "openai_compatible",
-			APIKey:          cfg.LLM.APIKey,
-			BaseURL:         cfg.LLM.BaseURL,
-			ChatModel:       cfg.LLM.Model,
-			ReasoningEffort: cfg.LLM.ReasoningEffort,
-			HTTPClient:      client,
-		})
-	default:
-		return nil, fmt.Errorf("unsupported llm provider %q", cfg.LLM.Provider)
-	}
+	thinking := cfg.LLM.ThinkingEnabled
+	return provider.NewRegisteredLLMProvider(cfg.LLM.Provider, provider.OpenAICompatibleConfig{
+		APIKey:          cfg.LLM.APIKey,
+		BaseURL:         cfg.LLM.BaseURL,
+		ChatModel:       cfg.LLM.Model,
+		ThinkingEnabled: &thinking,
+		ReasoningEffort: cfg.LLM.ReasoningEffort,
+		HTTPClient:      client,
+	})
 }
 
 func newBrowserRuntime(ctx context.Context, cfg appconfig.Config) (*browser.Runtime, func() error, error) {

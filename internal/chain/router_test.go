@@ -9,6 +9,9 @@ import (
 
 func TestLLMRouterUsesProviderJSON(t *testing.T) {
 	llm := provider.ChatFunc(func(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+		if req.ResponseFormat == nil || req.ResponseFormat.Type != "json_schema" {
+			t.Fatalf("expected structured response format, got %#v", req.ResponseFormat)
+		}
 		return provider.ChatResponse{
 			Model: req.Model,
 			Text: `{

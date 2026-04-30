@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/sukeke/agent-gogo/internal/domain"
+	"github.com/sukeke/agent-gogo/internal/llmjson"
 	"github.com/sukeke/agent-gogo/internal/provider"
-	"github.com/sukeke/agent-gogo/internal/textutil"
 )
 
 type LLMReviewStore interface {
@@ -50,18 +50,17 @@ func (r *LLMReviewer) Review(ctx context.Context, task domain.Task, attempt doma
 		"tool_calls":   toolCalls,
 		"instruction":  "Return JSON only: {\"approved\":true|false,\"summary\":\"...\"}. Approve when the task acceptance criteria are satisfied by observation summaries or payloads. Do not require a separate report/file/console output unless the task explicitly asks to create one.",
 	}
-	resp, err := r.llm.Chat(ctx, provider.ChatRequest{
-		Model: r.model,
-		Messages: []provider.ChatMessage{
-			{Role: "system", Content: llmReviewerSystemPrompt},
-			{Role: "user", Content: mustJSON(payload)},
-		},
-	})
-	if err != nil {
-		return Result{}, err
-	}
 	var decision llmReviewDecision
-	if err := textutil.DecodeJSONObject(resp.Text, &decision); err != nil {
+	if err := llmjson.ChatObject(ctx, llmjson.Request{
+		LLM:        r.llm,
+		Model:      r.model,
+		System:     llmReviewerSystemPrompt,
+		User:       mustJSON(payload),
+		SchemaName: "review_decision",
+		Schema:     reviewDecisionSchema(),
+		Metadata:   map[string]string{"stage": "reviewer.llm"},
+		MaxRepairs: 1,
+	}, &decision); err != nil {
 		return Result{}, err
 	}
 	summary := strings.TrimSpace(decision.Summary)
@@ -123,6 +122,18 @@ Do not require go build, go test, lint, or compile evidence unless the task acce
 Do not reject solely because earlier tool calls failed when later observations contain enough successful evidence.
 Do not require a separate structured report, document, or console output unless the task explicitly asks to create that artifact.
 For browser tasks, visible DOM text plus evidence URL is valid evidence; do not require raw HTML or HTTP status unless the user explicitly requested raw HTML or status codes.`
+
+func reviewDecisionSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"required":             []string{"approved", "summary"},
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"approved": map[string]any{"type": "boolean"},
+			"summary":  map[string]any{"type": "string"},
+		},
+	}
+}
 
 func mustJSON(value any) string {
 	data, err := json.Marshal(value)

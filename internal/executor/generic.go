@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	"github.com/sukeke/agent-gogo/internal/domain"
+	"github.com/sukeke/agent-gogo/internal/llmjson"
 	"github.com/sukeke/agent-gogo/internal/observer"
 	"github.com/sukeke/agent-gogo/internal/provider"
-	"github.com/sukeke/agent-gogo/internal/textutil"
 	"github.com/sukeke/agent-gogo/internal/tools"
 )
 
@@ -110,6 +110,7 @@ func (e *GenericExecutor) Execute(ctx context.Context, task domain.Task) (Result
 		return e.finishWithoutTools(ctx, inProgress, attempt, "generic executor completed without llm/tool runtime")
 	}
 	events := []actionEvent{}
+	fingerprints := map[string]int{}
 	for step := 1; step <= e.maxSteps; step++ {
 		if summary, ok := autoFinishSummary(inProgress, events); ok {
 			return e.finishWithoutTools(ctx, inProgress, attempt, summary)
@@ -117,6 +118,21 @@ func (e *GenericExecutor) Execute(ctx context.Context, task domain.Task) (Result
 		action, err := e.nextAction(ctx, inProgress, attempt, step, events)
 		if err != nil {
 			return e.fail(ctx, inProgress, attempt, err)
+		}
+		fingerprint := actionFingerprint(action)
+		if fingerprint != "" {
+			fingerprints[fingerprint]++
+			if fingerprints[fingerprint] > 2 {
+				events = append(events, actionEvent{
+					Step:    step,
+					Action:  action.Action,
+					Tool:    action.Tool,
+					State:   "rejected",
+					Summary: "repeated action blocked by progress guard",
+					Error:   "same action and arguments repeated too many times",
+				})
+				continue
+			}
 		}
 		if err := e.recordAction(ctx, inProgress.ID, attempt.ID, step, action); err != nil {
 			return Result{}, err
@@ -215,36 +231,71 @@ func (e *GenericExecutor) nextAction(ctx context.Context, task domain.Task, atte
 	if err != nil {
 		return agentAction{}, err
 	}
-	resp, err := e.llm.Chat(ctx, provider.ChatRequest{
-		Model: e.model,
-		Messages: []provider.ChatMessage{
-			{Role: "system", Content: genericExecutorPrompt},
-			{Role: "user", Content: string(payload)},
-		},
+	specs := e.tools.ListSpecs()
+	var action agentAction
+	if err := llmjson.ChatObject(ctx, llmjson.Request{
+		LLM:        e.llm,
+		Model:      e.model,
+		System:     genericExecutorPrompt,
+		User:       string(payload),
+		SchemaName: "generic_agent_action",
+		Schema:     agentActionSchema(specs),
+		Tools:      providerTools(specs),
 		Metadata: map[string]string{
 			"stage":      "executor.generic.action",
 			"task_id":    task.ID,
 			"attempt_id": attempt.ID,
 			"step":       fmt.Sprint(step),
 		},
-	})
-	if err != nil {
-		return agentAction{}, err
-	}
-	var action agentAction
-	if err := textutil.DecodeJSONObject(resp.Text, &action); err != nil {
+		MaxRepairs: 1,
+	}, &action); err != nil {
 		return agentAction{}, err
 	}
 	action.Action = strings.TrimSpace(action.Action)
-	action.Tool = strings.TrimSpace(action.Tool)
+	action.Tool = e.normalizeToolName(action.Tool)
 	if action.Args == nil {
 		action.Args = map[string]any{}
 	}
-	if e.isAvailableTool(action.Action) {
-		action.Tool = action.Action
+	if toolName := e.normalizeToolName(action.Action); e.isAvailableTool(toolName) {
+		action.Tool = toolName
 		action.Action = "tool_call"
 	}
 	return action, nil
+}
+
+func (e *GenericExecutor) normalizeToolName(name string) string {
+	name = strings.TrimSpace(name)
+	if e.isAvailableTool(name) {
+		return name
+	}
+	aliases := map[string]string{
+		"read_file":       "file.read",
+		"file_read":       "file.read",
+		"write_file":      "file.write",
+		"file_write":      "file.write",
+		"edit_file":       "file.patch",
+		"file_edit":       "file.patch",
+		"patch_file":      "file.patch",
+		"file_patch":      "file.patch",
+		"run_tests":       "test.run",
+		"run_test":        "test.run",
+		"go_test":         "test.run",
+		"run_command":     "shell.run",
+		"shell_command":   "shell.run",
+		"search_code":     "code.search",
+		"code_search":     "code.search",
+		"index_code":      "code.index",
+		"code_index":      "code.index",
+		"git_diff":        "git.diff",
+		"git_status":      "git.status",
+		"browser_open":    "browser.open",
+		"open_url":        "browser.open",
+		"browser_extract": "browser.extract",
+	}
+	if mapped := aliases[strings.ToLower(name)]; e.isAvailableTool(mapped) {
+		return mapped
+	}
+	return name
 }
 
 func (e *GenericExecutor) isAvailableTool(name string) bool {
@@ -367,6 +418,23 @@ func compactToolOutput(output map[string]any) string {
 	return text[:maxOutput] + "...[truncated]"
 }
 
+func actionFingerprint(action agentAction) string {
+	switch action.Action {
+	case "tool_call":
+		data, err := json.Marshal(action.Args)
+		if err != nil {
+			data = []byte(fmt.Sprint(action.Args))
+		}
+		return "tool:" + strings.TrimSpace(action.Tool) + ":" + string(data)
+	case "finish":
+		return "finish:" + strings.TrimSpace(action.Summary)
+	case "ask_user":
+		return "ask_user:" + strings.TrimSpace(action.Question)
+	default:
+		return "action:" + strings.TrimSpace(action.Action)
+	}
+}
+
 func finishEvidenceReady(task domain.Task, events []actionEvent) (bool, string) {
 	hasSuccessfulToolEvidence := false
 	hasSourceRead := false
@@ -433,10 +501,13 @@ func autoFinishSummary(task domain.Task, events []actionEvent) (string, bool) {
 		if taskNeedsBrowserRead(task) && !taskNeedsGeneratedText(task) && hasBrowserRead && strings.HasPrefix(event.Tool, "browser.") && event.State == "observed" {
 			return "browser evidence captured for this web-reading task: " + firstNonEmpty(event.Summary, event.Output), true
 		}
+		if taskNeedsReadOnly(task) && event.Tool == "file.read" && event.State == "succeeded" {
+			return "file content captured for this read-only task: " + firstNonEmpty(event.Summary, event.Output), true
+		}
 		if taskNeedsGeneratedText(task) && (event.Tool == "file.write" || event.Tool == "document.write" || event.Tool == "artifact.write") && event.State == "changed" {
 			return "generated text written for this task: " + firstNonEmpty(event.Summary, event.Output), true
 		}
-		if taskNeedsCodeChange(task) && !taskNeedsPassingTest(task) && (event.Tool == "file.patch" || event.Tool == "file.write") && event.State == "changed" {
+		if taskNeedsCodeChange(task) && !taskNeedsPassingTest(task) && !taskNeedsMechanicalVerification(task) && (event.Tool == "file.patch" || event.Tool == "file.write") && event.State == "changed" {
 			return "workspace file changed and satisfies this code-change task: " + firstNonEmpty(event.Summary, event.Output), true
 		}
 		if event.Tool != "test.run" {
@@ -591,6 +662,59 @@ func taskNeedsGeneratedText(task domain.Task) bool {
 	return false
 }
 
+func taskNeedsReadOnly(task domain.Task) bool {
+	if taskNeedsPassingTest(task) || taskNeedsDiagnosticTestRun(task) || taskNeedsCodeChange(task) || taskNeedsMechanicalVerification(task) || taskNeedsGeneratedText(task) || taskNeedsBrowserRead(task) {
+		return false
+	}
+	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
+	for _, marker := range []string{
+		"read file",
+		"read the file",
+		"inspect file",
+		"show file",
+		"file content",
+		"读取文件",
+		"查看文件",
+		"文件内容",
+		"閱讀文件",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func taskNeedsMechanicalVerification(task domain.Task) bool {
+	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
+	for _, marker := range []string{
+		"gofmt",
+		"format",
+		"formatted",
+		"compile",
+		"build",
+		"syntax",
+		"lint",
+		"signature",
+		"格式化",
+		"编译",
+		"編譯",
+		"构建",
+		"構建",
+		"语法",
+		"語法",
+		"签名",
+		"簽名",
+		"机械验收",
+		"機械驗收",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func taskNeedsCodeChange(task domain.Task) bool {
 	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
 	for _, marker := range []string{
@@ -617,9 +741,9 @@ func taskNeedsCodeChange(task domain.Task) bool {
 const genericExecutorPrompt = `You are the GenericExecutor for agent-gogo.
 Choose exactly one next action and return only JSON.
 Allowed JSON shapes:
-{"action":"tool_call","tool":"file.write","args":{"path":"...","content":"..."},"reason":"..."}
-{"action":"finish","summary":"...","reason":"..."}
-{"action":"ask_user","question":"...","reason":"..."}
+{"action":"tool_call","tool":"file.write","args":{"path":"...","content":"..."},"reason":"...","summary":"","question":""}
+{"action":"finish","tool":"","args":{},"reason":"...","summary":"...","question":""}
+{"action":"ask_user","tool":"","args":{},"reason":"...","summary":"","question":"..."}
 Rules:
 - Use only tools listed in available_tools.
 - Prefer small reversible tool calls.
@@ -637,3 +761,42 @@ Rules:
 - Do not ask the user to inspect a file you wrote; use file.read when inspection is necessary.
 - Use ask_user only when required information is absent from the workspace/tools or when the task cannot continue without external human input.
 - Do not include markdown or prose outside JSON.`
+
+func agentActionSchema(specs []tools.Spec) map[string]any {
+	toolNames := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		toolNames = append(toolNames, spec.Name)
+	}
+	return map[string]any{
+		"type": "object",
+		"required": []string{
+			"action",
+			"tool",
+			"args",
+			"reason",
+			"summary",
+			"question",
+		},
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"action":   map[string]any{"type": "string"},
+			"tool":     map[string]any{"type": "string", "enum": append([]string{""}, toolNames...)},
+			"args":     map[string]any{"type": "object"},
+			"reason":   map[string]any{"type": "string"},
+			"summary":  map[string]any{"type": "string"},
+			"question": map[string]any{"type": "string"},
+		},
+	}
+}
+
+func providerTools(specs []tools.Spec) []provider.ChatTool {
+	out := make([]provider.ChatTool, 0, len(specs))
+	for _, spec := range specs {
+		out = append(out, provider.ChatTool{
+			Name:        spec.Name,
+			Description: spec.Description,
+			InputSchema: spec.InputSchema,
+		})
+	}
+	return out
+}

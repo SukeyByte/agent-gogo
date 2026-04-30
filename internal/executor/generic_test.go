@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/sukeke/agent-gogo/internal/domain"
@@ -197,6 +198,32 @@ func TestGenericExecutorNormalizesToolNameAction(t *testing.T) {
 	}
 	if result.Task.Status != domain.TaskStatusImplemented {
 		t.Fatalf("expected implemented task, got %s", result.Task.Status)
+	}
+}
+
+func TestGenericExecutorNormalizesCommonToolAliases(t *testing.T) {
+	toolRuntime := tools.NewRuntime(nil)
+	handler := func(ctx context.Context, args map[string]any) (tools.Result, error) {
+		return tools.Result{Success: true}, nil
+	}
+	toolRuntime.Register(tools.Spec{Name: "file.read", Description: "read file", RiskLevel: "low"}, handler)
+	toolRuntime.Register(tools.Spec{Name: "file.write", Description: "write file", RiskLevel: "medium"}, handler)
+	toolRuntime.Register(tools.Spec{Name: "file.patch", Description: "patch file", RiskLevel: "medium"}, handler)
+	toolRuntime.Register(tools.Spec{Name: "test.run", Description: "run tests", RiskLevel: "medium"}, handler)
+	toolRuntime.Register(tools.Spec{Name: "code.search", Description: "search code", RiskLevel: "low"}, handler)
+
+	exec := NewGenericExecutor(GenericExecutorOptions{Tools: toolRuntime})
+	cases := map[string]string{
+		"read_file":   "file.read",
+		"write_file":  "file.write",
+		"edit_file":   "file.patch",
+		"run_tests":   "test.run",
+		"search_code": "code.search",
+	}
+	for input, want := range cases {
+		if got := exec.normalizeToolName(input); got != want {
+			t.Fatalf("normalizeToolName(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 
@@ -439,5 +466,110 @@ func TestAutoFinishDoesNotAcceptPatchWhenPassingTestsRequired(t *testing.T) {
 	}})
 	if ok {
 		t.Fatalf("unexpected auto finish: %s", summary)
+	}
+}
+
+func TestAutoFinishDoesNotAcceptPatchWhenMechanicalVerificationRequired(t *testing.T) {
+	task := domain.Task{
+		Title:              "修改代码并保持 gofmt",
+		Description:        "修改最少代码，并确认 gofmt 后语法正确。",
+		AcceptanceCriteria: []string{"代码已经 gofmt 格式化", "语法正确"},
+	}
+	summary, ok := autoFinishSummary(task, []actionEvent{{
+		Step:    1,
+		Action:  "tool_call",
+		Tool:    "file.patch",
+		State:   "changed",
+		Summary: "patched add.go",
+	}})
+	if ok {
+		t.Fatalf("unexpected auto finish: %s", summary)
+	}
+}
+
+func TestAutoFinishAcceptsReadOnlyFileTask(t *testing.T) {
+	task := domain.Task{
+		Title:              "读取文件内容",
+		Description:        "读取文件 README.md 的内容",
+		AcceptanceCriteria: []string{"文件内容已读取"},
+	}
+	summary, ok := autoFinishSummary(task, []actionEvent{{
+		Step:    1,
+		Action:  "tool_call",
+		Tool:    "file.read",
+		State:   "succeeded",
+		Summary: "file.read completed",
+		Output:  `{"path":"README.md","content":"hello"}`,
+	}})
+	if !ok {
+		t.Fatal("expected read-only file task to auto finish")
+	}
+	if !strings.Contains(summary, "file content captured") {
+		t.Fatalf("unexpected summary %q", summary)
+	}
+}
+
+func TestGenericExecutorBlocksRepeatedIdenticalToolCalls(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	project, err := sqlite.CreateProject(ctx, domain.Project{Name: "generic", Goal: "guard"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task, err := sqlite.CreateTask(ctx, domain.Task{
+		ProjectID:          project.ID,
+		Title:              "Write artifact after context",
+		Description:        "Write a file through tool runtime after reading context",
+		AcceptanceCriteria: []string{"file write tool is called"},
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	ready, err := sqlite.TransitionTask(ctx, task.ID, domain.TaskStatusReady, "ready")
+	if err != nil {
+		t.Fatalf("ready task: %v", err)
+	}
+
+	readCalls := 0
+	toolRuntime := tools.NewRuntime(sqlite)
+	toolRuntime.Register(tools.Spec{Name: "file.read", Description: "read file", RiskLevel: "low"}, func(ctx context.Context, args map[string]any) (tools.Result, error) {
+		readCalls++
+		return tools.Result{Success: true, Output: map[string]any{"path": args["path"], "content": "hello"}, EvidenceRef: "README.md"}, nil
+	})
+	toolRuntime.Register(tools.Spec{Name: "file.write", Description: "write file", RiskLevel: "medium"}, func(ctx context.Context, args map[string]any) (tools.Result, error) {
+		return tools.Result{Success: true, Output: map[string]any{"path": args["path"]}, EvidenceRef: "file://" + args["path"].(string)}, nil
+	})
+	step := 0
+	llm := provider.ChatFunc(func(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+		step++
+		if step <= 3 {
+			return provider.ChatResponse{Text: `{"action":"tool_call","tool":"file.read","args":{"path":"README.md"},"reason":"read context"}`}, nil
+		}
+		if step == 4 {
+			return provider.ChatResponse{Text: `{"action":"tool_call","tool":"file.write","args":{"path":"artifact.txt","content":"ok"},"reason":"recover with progress"}`}, nil
+		}
+		return provider.ChatResponse{Text: `{"action":"finish","summary":"artifact written","reason":"tool evidence exists"}`}, nil
+	})
+	exec := NewGenericExecutor(GenericExecutorOptions{
+		Store:    sqlite,
+		Tools:    toolRuntime,
+		LLM:      llm,
+		Model:    "test-model",
+		MaxSteps: 5,
+	})
+	result, err := exec.Execute(ctx, ready)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if result.Task.Status != domain.TaskStatusImplemented {
+		t.Fatalf("expected implemented task, got %s", result.Task.Status)
+	}
+	if readCalls != 2 {
+		t.Fatalf("expected third identical read to be blocked, got %d read calls", readCalls)
 	}
 }

@@ -100,6 +100,80 @@ func TestOpenAIProviderUsesSameChatCompletionsCore(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleProviderSendsStructuredOutputContract(t *testing.T) {
+	temperature := 0.1
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req chatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode chat completion request: %v", err)
+		}
+		if req.ResponseFormat == nil || req.ResponseFormat.Type != "json_schema" {
+			t.Fatalf("missing response format: %#v", req.ResponseFormat)
+		}
+		if req.ResponseFormat.JSONSchema == nil || req.ResponseFormat.JSONSchema.Strict == nil || !*req.ResponseFormat.JSONSchema.Strict {
+			t.Fatalf("missing strict json schema: %#v", req.ResponseFormat.JSONSchema)
+		}
+		if req.ResponseFormat.JSONSchema.Name != "test_schema" {
+			t.Fatalf("unexpected schema name %q", req.ResponseFormat.JSONSchema.Name)
+		}
+		if req.Temperature == nil || *req.Temperature != temperature {
+			t.Fatalf("unexpected temperature %#v", req.Temperature)
+		}
+		if len(req.Tools) != 1 || req.Tools[0].Function.Name != "file.read" {
+			t.Fatalf("unexpected tools %#v", req.Tools)
+		}
+		_, _ = w.Write([]byte(`{"model":"gpt-test","choices":[{"message":{"content":"{\"ok\":true}"}}]}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAICompatibleProvider(OpenAICompatibleConfig{
+		ProviderName: "test",
+		APIKey:       "test-key",
+		BaseURL:      server.URL,
+		ChatModel:    "gpt-test",
+		HTTPClient:   server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	_, err = provider.Chat(context.Background(), ChatRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+		ResponseFormat: &ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &JSONSchemaFormat{
+				Name:   "test_schema",
+				Schema: map[string]any{"type": "object"},
+				Strict: true,
+			},
+		},
+		Tools:       []ChatTool{{Name: "file.read", Description: "Read file", InputSchema: map[string]any{"type": "object"}}},
+		Temperature: &temperature,
+	})
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+}
+
+func TestRegisteredLLMProviderFactory(t *testing.T) {
+	name := "unit_test_provider"
+	RegisterLLMProvider(name, func(config OpenAICompatibleConfig) (LLMProvider, error) {
+		return ChatFunc(func(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+			return ChatResponse{Model: config.ChatModel, Text: "ok"}, nil
+		}), nil
+	})
+	llm, err := NewRegisteredLLMProvider(name, OpenAICompatibleConfig{ChatModel: "unit-model"})
+	if err != nil {
+		t.Fatalf("new registered provider: %v", err)
+	}
+	resp, err := llm.Chat(context.Background(), ChatRequest{})
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if resp.Text != "ok" || resp.Model != "unit-model" {
+		t.Fatalf("unexpected response %#v", resp)
+	}
+}
+
 func TestHTTPBrowserProviderUsesConfiguredEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/browser/call" {
