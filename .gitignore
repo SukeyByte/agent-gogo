@@ -45,3 +45,4 @@ docs/results/
 # Claude Code plans (local only)
 .claude/plans/
 .claude/memory/
+.claude/worktrees/
