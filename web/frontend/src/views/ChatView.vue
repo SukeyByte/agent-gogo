@@ -110,6 +110,7 @@ async function confirmAction(msg: ChatMessage, approved: boolean) {
   const meta = msg.metadata || {}
   try {
     await api.sendConfirmation(
+      meta.confirmation_id || meta.id || '',
       meta.project_id || '',
       meta.task_id || '',
       meta.attempt_id || '',

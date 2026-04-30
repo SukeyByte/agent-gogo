@@ -27,7 +27,10 @@ func (v *CapabilityTaskValidator) ValidateTask(ctx context.Context, task domain.
 	if err := v.inner.ValidateTask(ctx, task); err != nil {
 		return err
 	}
-	required := InferRequiredCapabilities(task)
+	required := textutil.SortedUniqueStrings(task.RequiredCapabilities)
+	if len(required) == 0 {
+		required = InferRequiredCapabilities(task)
+	}
 	if len(required) == 0 || v.registry == nil {
 		return nil
 	}

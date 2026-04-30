@@ -67,28 +67,39 @@ func (p *LLMPlanner) PlanProject(ctx context.Context, req PlanRequest) ([]domain
 			description = strings.TrimSpace(planned.Description)
 		}
 		tasks = append(tasks, domain.Task{
-			ProjectID:          req.Project.ID,
-			Title:              title,
-			Description:        description,
-			Status:             domain.TaskStatusDraft,
-			AcceptanceCriteria: criteria,
-			DependsOn:          textutil.SortedUniqueStrings(planned.DependsOn),
+			ProjectID:            req.Project.ID,
+			Title:                title,
+			Description:          description,
+			Phase:                strings.TrimSpace(planned.Phase),
+			Status:               domain.TaskStatusDraft,
+			AcceptanceCriteria:   criteria,
+			RequiredCapabilities: plannedRequiredCapabilities(planned),
+			DependsOn:            textutil.SortedUniqueStrings(planned.DependsOn),
 		})
 	}
 	return tasks, nil
 }
 
 type plannerOutput struct {
-	Tasks []plannedTask `json:"tasks"`
+	Phases []plannedPhase `json:"phases"`
+	Tasks  []plannedTask  `json:"tasks"`
+}
+
+type plannedPhase struct {
+	Title       string `json:"title"`
+	Goal        string `json:"goal"`
+	Description string `json:"description"`
 }
 
 type plannedTask struct {
-	Title       string   `json:"title"`
-	Goal        string   `json:"goal"`
-	Description string   `json:"description"`
-	Type        string   `json:"type"`
-	DependsOn   []string `json:"depends_on"`
-	Acceptance  []string `json:"acceptance"`
+	Phase                string   `json:"phase"`
+	Title                string   `json:"title"`
+	Goal                 string   `json:"goal"`
+	Description          string   `json:"description"`
+	Type                 string   `json:"type"`
+	DependsOn            []string `json:"depends_on"`
+	Acceptance           []string `json:"acceptance"`
+	RequiredCapabilities []string `json:"required_capabilities"`
 }
 
 var plannerSystemPrompt = prompts.Text("planner")
@@ -110,9 +121,11 @@ func ensureResearchAndReflectionTasks(req PlanRequest, planned []plannedTask) []
 	researchDependency := firstTaskTitleMatching(planned, researchMarkers)
 	if !hasResearch {
 		prefix = append(prefix, plannedTask{
-			Title: "研究上下文与可用资料",
-			Goal:  "先读取、搜索或浏览必要资料，确认任务事实、约束、现有实现和可用工具，不直接进入实现。",
-			Type:  "runtime",
+			Phase:                "发现与反思",
+			Title:                "研究上下文与可用资料",
+			Goal:                 "先读取、搜索或浏览必要资料，确认任务事实、约束、现有实现和可用工具，不直接进入实现。",
+			Type:                 "runtime",
+			RequiredCapabilities: []string{"inspect", "read"},
 			Acceptance: []string{
 				"已用可用工具收集完成任务所需的事实和上下文",
 				"已记录关键约束、未知项和可用工具证据",
@@ -128,10 +141,12 @@ func ensureResearchAndReflectionTasks(req PlanRequest, planned []plannedTask) []
 			depends = append(depends, researchDependency)
 		}
 		prefix = append(prefix, plannedTask{
-			Title:     reflectionTitle,
-			Goal:      "基于研究结果反思任务拆解是否站得住脚，明确最小可执行任务、风险和机械验收标准。",
-			Type:      "general",
-			DependsOn: depends,
+			Phase:                "发现与反思",
+			Title:                reflectionTitle,
+			Goal:                 "基于研究结果反思任务拆解是否站得住脚，明确最小可执行任务、风险和机械验收标准。",
+			Type:                 "general",
+			DependsOn:            depends,
+			RequiredCapabilities: []string{"verify"},
 			Acceptance: []string{
 				"已说明当前任务拆解为什么足以达成用户目标",
 				"已识别关键风险、缺失信息和需要重规划的条件",
@@ -252,33 +267,56 @@ func appendIfMissing(values []string, value string) []string {
 	return append(values, value)
 }
 
+func plannedRequiredCapabilities(task plannedTask) []string {
+	return textutil.SortedUniqueStrings(task.RequiredCapabilities)
+}
+
 func plannerOutputSchema() map[string]any {
-	taskSchema := map[string]any{
+	phaseSchema := map[string]any{
 		"type": "object",
 		"required": []string{
 			"title",
 			"goal",
 			"description",
-			"type",
-			"depends_on",
-			"acceptance",
 		},
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"title":       map[string]any{"type": "string"},
 			"goal":        map[string]any{"type": "string"},
 			"description": map[string]any{"type": "string"},
-			"type":        map[string]any{"type": "string", "enum": []string{"code", "browser", "document", "runtime", "general"}},
-			"depends_on":  arraySchema("string"),
-			"acceptance":  arraySchema("string"),
+		},
+	}
+	taskSchema := map[string]any{
+		"type": "object",
+		"required": []string{
+			"phase",
+			"title",
+			"goal",
+			"description",
+			"type",
+			"depends_on",
+			"acceptance",
+			"required_capabilities",
+		},
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"phase":                 map[string]any{"type": "string"},
+			"title":                 map[string]any{"type": "string"},
+			"goal":                  map[string]any{"type": "string"},
+			"description":           map[string]any{"type": "string"},
+			"type":                  map[string]any{"type": "string", "enum": []string{"code", "browser", "document", "runtime", "general"}},
+			"depends_on":            arraySchema("string"),
+			"acceptance":            arraySchema("string"),
+			"required_capabilities": arraySchema("string"),
 		},
 	}
 	return map[string]any{
 		"type":                 "object",
-		"required":             []string{"tasks"},
+		"required":             []string{"phases", "tasks"},
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"tasks": map[string]any{"type": "array", "items": taskSchema},
+			"phases": map[string]any{"type": "array", "items": phaseSchema},
+			"tasks":  map[string]any{"type": "array", "items": taskSchema},
 		},
 	}
 }

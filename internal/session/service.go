@@ -33,9 +33,9 @@ type ProjectCreator interface {
 }
 
 type ActiveSession struct {
-	Session       domain.Session
-	RuntimeCtx    *domain.SessionRuntimeContext
-	CancelFunc    context.CancelFunc
+	Session    domain.Session
+	RuntimeCtx *domain.SessionRuntimeContext
+	CancelFunc context.CancelFunc
 }
 
 type Config struct {
@@ -49,10 +49,10 @@ func DefaultConfig() Config {
 }
 
 type Service struct {
-	store    SessionStore
-	config   Config
-	active   map[string]*ActiveSession
-	mu       sync.RWMutex
+	store  SessionStore
+	config Config
+	active map[string]*ActiveSession
+	mu     sync.RWMutex
 }
 
 func NewService(store SessionStore, config Config) *Service {
@@ -253,13 +253,13 @@ func (s *Service) SaveRuntimeContext(ctx context.Context, sctx domain.SessionRun
 	return s.store.SaveSessionRuntimeContext(ctx, sctx)
 }
 
+func (s *Service) GetRuntimeContext(ctx context.Context, sessionID string) (domain.SessionRuntimeContext, error) {
+	return s.store.GetSessionRuntimeContext(ctx, sessionID)
+}
+
 // SaveSessionRuntimeContext satisfies runtime.SessionContextSaver.
 func (s *Service) SaveSessionRuntimeContext(ctx context.Context, sctx domain.SessionRuntimeContext) error {
 	return s.SaveRuntimeContext(ctx, sctx)
-}
-
-func (s *Service) GetRuntimeContext(ctx context.Context, sessionID string) (domain.SessionRuntimeContext, error) {
-	return s.store.GetSessionRuntimeContext(ctx, sessionID)
 }
 
 func (s *Service) Touch(ctx context.Context, sessionID string) error {

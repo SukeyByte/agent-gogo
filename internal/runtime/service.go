@@ -10,6 +10,7 @@ import (
 	"github.com/sukeke/agent-gogo/internal/chain"
 	comm "github.com/sukeke/agent-gogo/internal/communication"
 	"github.com/sukeke/agent-gogo/internal/contextbuilder"
+	"github.com/sukeke/agent-gogo/internal/discovery"
 	"github.com/sukeke/agent-gogo/internal/domain"
 	"github.com/sukeke/agent-gogo/internal/executor"
 	"github.com/sukeke/agent-gogo/internal/function"
@@ -86,6 +87,7 @@ type Service struct {
 	decisionByProjectID  map[string]chain.Decision
 	profileByProjectID   map[string]intentpkg.Profile
 	contextMaxChars      int
+	discovery            discovery.Loop
 }
 
 type CreateProjectRequest struct {
@@ -104,12 +106,13 @@ type ChannelEvent struct {
 }
 
 type UserConfirmation struct {
-	ProjectID string
-	TaskID    string
-	AttemptID string
-	ActionID  string
-	Approved  bool
-	Message   string
+	ConfirmationID string
+	ProjectID      string
+	TaskID         string
+	AttemptID      string
+	ActionID       string
+	Approved       bool
+	Message        string
 }
 
 type TaskRunResult struct {
@@ -190,6 +193,10 @@ func (s *Service) UseContextBudget(maxChars int) {
 	s.contextMaxChars = maxChars
 }
 
+func (s *Service) UseDiscoveryLoop(loop discovery.Loop) {
+	s.discovery = loop
+}
+
 func (s *Service) UseSession(saver SessionContextSaver, sessionID string) {
 	s.sessionSaver = saver
 	s.sessionID = strings.TrimSpace(sessionID)
@@ -241,6 +248,14 @@ func (s *Service) PlanProject(ctx context.Context, projectID string) ([]domain.T
 	planningContext, err := s.buildRuntimeContext(ctx, project, "", chainDecision, intentProfile)
 	if err != nil {
 		return nil, err
+	}
+	discoveryResult, err := s.runDiscovery(ctx, project, chainDecision, intentProfile)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(discoveryResult.Summary) != "" {
+		planningContext = appendPlanningDiscovery(planningContext, discoveryResult)
+		planningContext = limitContextText(planningContext, s.contextMaxChars)
 	}
 	if s.contextByProjectID == nil {
 		s.contextByProjectID = map[string]string{}
@@ -320,6 +335,34 @@ func (s *Service) PlanProject(ctx context.Context, projectID string) ([]domain.T
 	return readyTasks, nil
 }
 
+func (s *Service) runDiscovery(ctx context.Context, project domain.Project, decision chain.Decision, profile intentpkg.Profile) (discovery.Result, error) {
+	if s.discovery == nil {
+		return discovery.Result{}, nil
+	}
+	result, err := s.discovery.Discover(ctx, discovery.Request{
+		Project:       project,
+		ChainDecision: decision,
+		IntentProfile: profile,
+	})
+	if err != nil {
+		return discovery.Result{}, err
+	}
+	if err := s.log(ctx, "discovery.preplan", result); err != nil {
+		return discovery.Result{}, err
+	}
+	return result, nil
+}
+
+func appendPlanningDiscovery(contextText string, result discovery.Result) string {
+	summary := strings.TrimSpace(result.Summary)
+	if summary == "" {
+		return contextText
+	}
+	if strings.TrimSpace(contextText) == "" {
+		return "[DISCOVERY]\n" + summary
+	}
+	return contextText + "\n\n[DISCOVERY]\n" + summary
+}
 
 func (s *Service) routeProject(ctx context.Context, project domain.Project) (chain.Decision, error) {
 	if s.chainRouter == nil {
@@ -514,7 +557,7 @@ func (s *Service) HandleUserConfirmation(ctx context.Context, confirmation UserC
 		AttemptID: confirmation.AttemptID,
 		Type:      "user.confirmation." + decision,
 		Message:   message,
-		Payload:   fmt.Sprintf(`{"action_id":%q}`, confirmation.ActionID),
+		Payload:   fmt.Sprintf(`{"confirmation_id":%q,"action_id":%q}`, confirmation.ConfirmationID, confirmation.ActionID),
 	}); err != nil {
 		return err
 	}
@@ -683,4 +726,3 @@ func (s *Service) log(ctx context.Context, stage string, payload any) error {
 	}
 	return s.logger.Log(ctx, stage, payload)
 }
-

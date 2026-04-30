@@ -24,15 +24,17 @@ type jsonProject struct {
 }
 
 type jsonTask struct {
-	ID                 string   `json:"id"`
-	ProjectID          string   `json:"project_id"`
-	Title              string   `json:"title"`
-	Description        string   `json:"description"`
-	Status             string   `json:"status"`
-	AcceptanceCriteria []string `json:"acceptance_criteria"`
-	DependsOn          []string `json:"depends_on"`
-	CreatedAt          string   `json:"created_at"`
-	UpdatedAt          string   `json:"updated_at"`
+	ID                   string   `json:"id"`
+	ProjectID            string   `json:"project_id"`
+	Title                string   `json:"title"`
+	Description          string   `json:"description"`
+	Phase                string   `json:"phase"`
+	Status               string   `json:"status"`
+	AcceptanceCriteria   []string `json:"acceptance_criteria"`
+	RequiredCapabilities []string `json:"required_capabilities"`
+	DependsOn            []string `json:"depends_on"`
+	CreatedAt            string   `json:"created_at"`
+	UpdatedAt            string   `json:"updated_at"`
 }
 
 type jsonTaskAttempt struct {
@@ -148,7 +150,8 @@ func projectToJSON(p domain.Project) jsonProject {
 func taskToJSON(t domain.Task) jsonTask {
 	return jsonTask{
 		ID: t.ID, ProjectID: t.ProjectID, Title: t.Title, Description: t.Description,
-		Status: string(t.Status), AcceptanceCriteria: t.AcceptanceCriteria, DependsOn: t.DependsOn,
+		Phase: t.Phase, Status: string(t.Status), AcceptanceCriteria: t.AcceptanceCriteria,
+		RequiredCapabilities: t.RequiredCapabilities, DependsOn: t.DependsOn,
 		CreatedAt: formatTime(t.CreatedAt), UpdatedAt: formatTime(t.UpdatedAt),
 	}
 }

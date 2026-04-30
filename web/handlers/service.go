@@ -18,10 +18,11 @@ type InboundEvent struct {
 }
 
 type InboundConfirmation struct {
-	ProjectID string `json:"project_id"`
-	TaskID    string `json:"task_id"`
-	AttemptID string `json:"attempt_id"`
-	ActionID  string `json:"action_id"`
-	Approved  bool   `json:"approved"`
-	Message   string `json:"message"`
+	ConfirmationID string `json:"confirmation_id"`
+	ProjectID      string `json:"project_id"`
+	TaskID         string `json:"task_id"`
+	AttemptID      string `json:"attempt_id"`
+	ActionID       string `json:"action_id"`
+	Approved       bool   `json:"approved"`
+	Message        string `json:"message"`
 }

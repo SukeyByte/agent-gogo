@@ -31,39 +31,7 @@ func (s *Service) buildRuntimeContext(ctx context.Context, project domain.Projec
 		return "", err
 	}
 
-	var activeFunctionSchemas []contextbuilder.FunctionSchema
-	var deferredFunctionCards []contextbuilder.FunctionCard
-	if s.functions != nil {
-		cards, err := s.functions.Search(ctx, function.SearchRequest{
-			Query:                project.Goal,
-			TaskType:             profile.TaskType,
-			Domains:              profile.Domains,
-			RequiredCapabilities: requiredCapabilities(decision, profile),
-			Limit:                8,
-		})
-		if err != nil {
-			return "", err
-		}
-		if err := s.log(ctx, "function.search", cards); err != nil {
-			return "", err
-		}
-		deferredFunctionCards = functionCardsForContext(cards)
-		active, err := s.functions.Activate(ctx, firstFunctionCards(cards, 4))
-		if err != nil {
-			return "", err
-		}
-		activeFunctionSchemas = active.ContextSchemas()
-	}
-
-	activeSkills, deferredSkills, err := s.searchSkills(ctx, project, profile, decision)
-	if err != nil {
-		return "", err
-	}
-	activePersonas, err := s.searchPersonas(ctx, project, profile)
-	if err != nil {
-		return "", err
-	}
-	relevantMemories, err := s.searchMemories(ctx, project, profile, awareness.QueryText)
+	assets, err := s.loadRuntimeContextAssets(ctx, project, decision, profile, awareness.QueryText)
 	if err != nil {
 		return "", err
 	}
@@ -84,13 +52,13 @@ func (s *Service) buildRuntimeContext(ctx context.Context, project domain.Projec
 			},
 		},
 		IntentProfile:              profile.ContextProfile(),
-		ActiveCapabilities:         capabilitySpecs(activeFunctionSchemas),
-		ActiveFunctionSchemas:      activeFunctionSchemas,
-		DeferredFunctionCandidates: deferredFunctionCards,
-		ActiveSkillInstructions:    activeSkills,
-		DeferredSkillCandidates:    deferredSkills,
-		ActivePersonas:             activePersonas,
-		RelevantMemories:           relevantMemories,
+		ActiveCapabilities:         capabilitySpecs(assets.ActiveFunctionSchemas),
+		ActiveFunctionSchemas:      assets.ActiveFunctionSchemas,
+		DeferredFunctionCandidates: assets.DeferredFunctionCards,
+		ActiveSkillInstructions:    assets.ActiveSkills,
+		DeferredSkillCandidates:    assets.DeferredSkills,
+		ActivePersonas:             assets.ActivePersonas,
+		RelevantMemories:           assets.RelevantMemories,
 		ProjectState:               awareness.ProjectState,
 		TaskState:                  awareness.TaskState,
 		AcceptanceCriteria:         awareness.AcceptanceCriteria,

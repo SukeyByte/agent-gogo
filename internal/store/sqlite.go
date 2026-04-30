@@ -60,7 +60,40 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 			return fmt.Errorf("migration %s: %w", name, err)
 		}
 	}
-	return nil
+	return s.ensureTaskPlanningMetadata(ctx)
+}
+
+func (s *SQLiteStore) ensureTaskPlanningMetadata(ctx context.Context) error {
+	if err := s.ensureColumn(ctx, "tasks", "phase", "ALTER TABLE tasks ADD COLUMN phase TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return s.ensureColumn(ctx, "tasks", "required_capabilities", "ALTER TABLE tasks ADD COLUMN required_capabilities TEXT NOT NULL DEFAULT '[]'")
+}
+
+func (s *SQLiteStore) ensureColumn(ctx context.Context, table string, column string, statement string) error {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, statement)
+	return err
 }
 
 func (s *SQLiteStore) CreateProject(ctx context.Context, project domain.Project) (domain.Project, error) {
@@ -159,11 +192,15 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, task domain.Task) (domain.
 	if err != nil {
 		return domain.Task{}, err
 	}
+	requiredCapabilities, err := json.Marshal(task.RequiredCapabilities)
+	if err != nil {
+		return domain.Task{}, err
+	}
 
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO tasks (id, project_id, title, description, status, acceptance_criteria, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, task.ID, task.ProjectID, task.Title, task.Description, task.Status, string(criteria), formatTime(task.CreatedAt), formatTime(task.UpdatedAt))
+		INSERT INTO tasks (id, project_id, title, description, phase, status, acceptance_criteria, required_capabilities, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, task.ID, task.ProjectID, task.Title, task.Description, task.Phase, task.Status, string(criteria), string(requiredCapabilities), formatTime(task.CreatedAt), formatTime(task.UpdatedAt))
 	if err != nil {
 		return domain.Task{}, err
 	}
@@ -190,17 +227,20 @@ func (s *SQLiteStore) CreateTaskDependency(ctx context.Context, dependency domai
 
 func (s *SQLiteStore) GetTask(ctx context.Context, id string) (domain.Task, error) {
 	var task domain.Task
-	var criteria string
+	var criteria, requiredCapabilities string
 	var createdAt, updatedAt string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, project_id, title, description, status, acceptance_criteria, created_at, updated_at
+		SELECT id, project_id, title, description, phase, status, acceptance_criteria, required_capabilities, created_at, updated_at
 		FROM tasks
 		WHERE id = ?
-	`, id).Scan(&task.ID, &task.ProjectID, &task.Title, &task.Description, &task.Status, &criteria, &createdAt, &updatedAt)
+	`, id).Scan(&task.ID, &task.ProjectID, &task.Title, &task.Description, &task.Phase, &task.Status, &criteria, &requiredCapabilities, &createdAt, &updatedAt)
 	if err != nil {
 		return domain.Task{}, err
 	}
 	if err := json.Unmarshal([]byte(criteria), &task.AcceptanceCriteria); err != nil {
+		return domain.Task{}, err
+	}
+	if err := json.Unmarshal([]byte(requiredCapabilities), &task.RequiredCapabilities); err != nil {
 		return domain.Task{}, err
 	}
 	parsedCreatedAt, err := parseTime(createdAt)
@@ -218,7 +258,7 @@ func (s *SQLiteStore) GetTask(ctx context.Context, id string) (domain.Task, erro
 
 func (s *SQLiteStore) ListTasksByProject(ctx context.Context, projectID string) ([]domain.Task, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, project_id, title, description, status, acceptance_criteria, created_at, updated_at
+		SELECT id, project_id, title, description, phase, status, acceptance_criteria, required_capabilities, created_at, updated_at
 		FROM tasks
 		WHERE project_id = ?
 		ORDER BY created_at, id
@@ -231,12 +271,15 @@ func (s *SQLiteStore) ListTasksByProject(ctx context.Context, projectID string) 
 	var tasks []domain.Task
 	for rows.Next() {
 		var task domain.Task
-		var criteria string
+		var criteria, requiredCapabilities string
 		var createdAt, updatedAt string
-		if err := rows.Scan(&task.ID, &task.ProjectID, &task.Title, &task.Description, &task.Status, &criteria, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&task.ID, &task.ProjectID, &task.Title, &task.Description, &task.Phase, &task.Status, &criteria, &requiredCapabilities, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(criteria), &task.AcceptanceCriteria); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(requiredCapabilities), &task.RequiredCapabilities); err != nil {
 			return nil, err
 		}
 		task.CreatedAt, err = parseTime(createdAt)
@@ -754,17 +797,20 @@ func (s *SQLiteStore) ListArtifactsByProject(ctx context.Context, projectID stri
 
 func getTaskTx(ctx context.Context, tx *sql.Tx, id string) (domain.Task, error) {
 	var task domain.Task
-	var criteria string
+	var criteria, requiredCapabilities string
 	var createdAt, updatedAt string
 	err := tx.QueryRowContext(ctx, `
-		SELECT id, project_id, title, description, status, acceptance_criteria, created_at, updated_at
+		SELECT id, project_id, title, description, phase, status, acceptance_criteria, required_capabilities, created_at, updated_at
 		FROM tasks
 		WHERE id = ?
-	`, id).Scan(&task.ID, &task.ProjectID, &task.Title, &task.Description, &task.Status, &criteria, &createdAt, &updatedAt)
+	`, id).Scan(&task.ID, &task.ProjectID, &task.Title, &task.Description, &task.Phase, &task.Status, &criteria, &requiredCapabilities, &createdAt, &updatedAt)
 	if err != nil {
 		return domain.Task{}, err
 	}
 	if err := json.Unmarshal([]byte(criteria), &task.AcceptanceCriteria); err != nil {
+		return domain.Task{}, err
+	}
+	if err := json.Unmarshal([]byte(requiredCapabilities), &task.RequiredCapabilities); err != nil {
 		return domain.Task{}, err
 	}
 	task.CreatedAt, err = parseTime(createdAt)
@@ -908,6 +954,11 @@ func (s *SQLiteStore) TouchSession(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE sessions SET last_active_at = ?, updated_at = ? WHERE id = ?
 	`, formatTime(now), formatTime(now), id)
+	return err
+}
+
+func (s *SQLiteStore) DeleteSession(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
 	return err
 }
 

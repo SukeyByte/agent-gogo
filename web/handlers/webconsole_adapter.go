@@ -41,14 +41,17 @@ func (a *WebConsoleAdapter) Deliver(ctx context.Context, message communication.R
 	if err := ctx.Err(); err != nil {
 		return communication.DeliveryReceipt{}, err
 	}
+	eventID := uuid.NewString()
 
 	data, err := json.Marshal(map[string]any{
-		"channel_id":   message.ChannelID,
-		"channel_type": message.ChannelType,
-		"type":         string(message.Type),
-		"text":         message.Text,
-		"buttons":      message.Buttons,
-		"payload":      message.Payload,
+		"id":              eventID,
+		"confirmation_id": eventID,
+		"channel_id":      message.ChannelID,
+		"channel_type":    message.ChannelType,
+		"type":            string(message.Type),
+		"text":            message.Text,
+		"buttons":         message.Buttons,
+		"payload":         message.Payload,
 	})
 	if err != nil {
 		return communication.DeliveryReceipt{}, err
@@ -69,6 +72,7 @@ func (a *WebConsoleAdapter) Deliver(ctx context.Context, message communication.R
 	}
 
 	a.hub.Publish(a.channelID, SSEEvent{
+		ID:   eventID,
 		Type: eventType,
 		Data: data,
 	})
@@ -76,7 +80,7 @@ func (a *WebConsoleAdapter) Deliver(ctx context.Context, message communication.R
 	return communication.DeliveryReceipt{
 		ChannelID:   a.channelID,
 		Status:      communication.DeliveryDelivered,
-		MessageID:   uuid.NewString(),
+		MessageID:   eventID,
 		DeliveredAt: time.Now().UTC(),
 	}, nil
 }

@@ -21,8 +21,10 @@ export interface Task {
   project_id: string
   title: string
   description: string
+  phase?: string
   status: TaskStatus
   acceptance_criteria: string[]
+  required_capabilities?: string[]
   depends_on: string[]
   created_at: string
   updated_at: string

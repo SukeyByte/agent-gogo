@@ -133,22 +133,27 @@ export const api = {
   async getChainDecision(_sessionId: string): Promise<ChainDecision> { return mockChainDecision },
 
   // Confirmation (approve/reject)
-  async sendConfirmation(projectId: string, taskId: string, attemptId: string, actionId: string, approved: boolean, message: string): Promise<void> {
-    await post('/confirmation', { project_id: projectId, task_id: taskId, attempt_id: attemptId, action_id: actionId, approved, message })
+  async sendConfirmation(confirmationId: string, projectId: string, taskId: string, attemptId: string, actionId: string, approved: boolean, message: string): Promise<void> {
+    await post('/confirmation', { confirmation_id: confirmationId, project_id: projectId, task_id: taskId, attempt_id: attemptId, action_id: actionId, approved, message })
   },
 
-  // Skills — mock only
-  async listSkills(): Promise<SkillCard[]> { return mockSkills },
-  async getSkill(id: string): Promise<SkillCard> { return mockSkills.find(s => s.id === id) || mockSkills[0] },
-  async searchSkills(query: string): Promise<SkillCard[]> { return mockSkills.filter(s => s.name.includes(query) || s.description.includes(query)) },
+  // Skills
+  async listSkills(): Promise<SkillCard[]> { return withFallback(() => request<SkillCard[]>('/skills'), mockSkills) },
+  async getSkill(id: string): Promise<SkillCard> { return withFallback(() => request<SkillCard>(`/skills/${id}`), mockSkills.find(s => s.id === id) || mockSkills[0]) },
+  async searchSkills(query: string): Promise<SkillCard[]> { return withFallback(() => request<SkillCard[]>(`/skills?q=${encodeURIComponent(query)}`), mockSkills.filter(s => s.name.includes(query) || s.description.includes(query))) },
 
-  // Personas — mock only
-  async listPersonas(): Promise<PersonaCard[]> { return mockPersonas },
-  async getPersona(id: string): Promise<PersonaCard> { return mockPersonas.find(p => p.id === id) || mockPersonas[0] },
+  // Personas
+  async listPersonas(): Promise<PersonaCard[]> { return withFallback(() => request<PersonaCard[]>('/personas'), mockPersonas) },
+  async getPersona(id: string): Promise<PersonaCard> { return withFallback(() => request<PersonaCard>(`/personas/${id}`), mockPersonas.find(p => p.id === id) || mockPersonas[0]) },
 
-  // Memory — mock only
-  async listMemories(scope?: string): Promise<MemoryItem[]> { return scope ? mockMemories.filter(m => m.scope === scope) : mockMemories },
-  async searchMemories(query: string): Promise<MemoryItem[]> { return mockMemories.filter(m => m.summary.includes(query) || m.body.includes(query) || m.tags.some(t => t.includes(query))) },
+  // Memory
+  async listMemories(scope?: string): Promise<MemoryItem[]> {
+    const suffix = scope ? `?scope=${encodeURIComponent(scope)}` : ''
+    return withFallback(() => request<MemoryItem[]>(`/memory${suffix}`), scope ? mockMemories.filter(m => m.scope === scope) : mockMemories)
+  },
+  async searchMemories(query: string): Promise<MemoryItem[]> {
+    return withFallback(() => request<MemoryItem[]>(`/memory?q=${encodeURIComponent(query)}`), mockMemories.filter(m => m.summary.includes(query) || m.body.includes(query) || m.tags.some(t => t.includes(query))))
+  },
   async addMemory(item: Partial<MemoryItem>): Promise<MemoryItem> {
     return { id: `mem-${Date.now()}`, scope: item.scope || 'working', type: item.type || 'fuzzy', tags: item.tags || [], summary: item.summary || '', body: item.body || '', confidence: item.confidence || 0.8, artifact_ref: '', source_task_id: '', version_hash: `m${Date.now()}` }
   },
@@ -162,9 +167,9 @@ export const api = {
     return withFallback(async (): Promise<AppConfig> => {
       const raw = await request<Record<string, any>>('/config')
       return {
-        llm: { provider: '', model: '', base_url: '', api_key: '', timeout: 0 },
+        llm: { provider: '', model: '', base_url: '', api_key: '', timeout: raw.llm_timeout_seconds || 0 },
         embedding: { provider: '', model: '', base_url: '', api_key: '' },
-        browser: { provider: '', mcp_url: '', headless: false, timeout: 0 },
+        browser: { provider: '', mcp_url: '', headless: false, timeout: raw.browser_timeout_seconds || 0 },
         storage: {
           workspace_path: raw.workspace_path || '',
           sqlite_path: raw.sqlite_path || '',
@@ -174,17 +179,14 @@ export const api = {
           persona_path: raw.persona_path || '',
         },
         memory: { max_working_items: 0, max_project_items: 0, default_scope: '', enable_auto_extract: false },
-        runtime: { max_tasks_per_project: 0, max_retries: 0, token_budget: 0, enable_prompt_cache: false, enable_auto_repair: false, enable_debug_log: false },
+        runtime: { max_tasks_per_project: raw.max_tasks_per_project || 0, max_retries: 0, token_budget: raw.context_max_chars || 0, enable_prompt_cache: false, enable_auto_repair: false, enable_debug_log: false },
         chain_router: { l0_max_tokens: 0, l1_max_tools: 0, l2_max_tasks: 0, auto_plan_threshold: '' },
-        security: { require_confirm_high_risk: false, allow_shell: false, allow_auto_execute_high_risk: false },
+        security: { require_confirm_high_risk: !!raw.require_confirm_high_risk, allow_shell: !!raw.allow_shell, allow_auto_execute_high_risk: false },
       }
     }, mockConfig)
   },
   async saveConfig(config: AppConfig): Promise<void> {
-    await post('/message', {
-      type: 'goal.submitted',
-      text: `/config ${JSON.stringify(config as unknown as Record<string, unknown>)}`,
-    })
+    await post('/config', config as unknown as Record<string, unknown>)
   },
 
   // Files — mock only
@@ -200,4 +202,8 @@ export const api = {
   async getSessionContext(id: string): Promise<SessionContext | null> {
     return withFallback(() => request<SessionContext>(`/sessions/${id}/context`), null)
   },
+  async pauseSession(id: string): Promise<Session> { return request<Session>(`/sessions/${id}/pause`, { method: 'POST' }) },
+  async resumeSession(id: string): Promise<Session> { return request<Session>(`/sessions/${id}/resume`, { method: 'POST' }) },
+  async expireSession(id: string): Promise<Session> { return request<Session>(`/sessions/${id}/expire`, { method: 'POST' }) },
+  async deleteSession(id: string): Promise<void> { await post(`/sessions/${id}/delete`, {}) },
 }

@@ -8,12 +8,18 @@ import (
 	"strings"
 
 	"github.com/sukeke/agent-gogo/internal/domain"
+	"github.com/sukeke/agent-gogo/internal/memory"
+	"github.com/sukeke/agent-gogo/internal/persona"
+	"github.com/sukeke/agent-gogo/internal/skill"
 )
 
 type SessionStore interface {
 	ListSessions(ctx context.Context) ([]domain.Session, error)
 	GetSession(ctx context.Context, id string) (domain.Session, error)
+	UpdateSession(ctx context.Context, session domain.Session) (domain.Session, error)
+	DeleteSession(ctx context.Context, id string) error
 	GetSessionRuntimeContext(ctx context.Context, sessionID string) (domain.SessionRuntimeContext, error)
+	DeleteSessionRuntimeContext(ctx context.Context, sessionID string) error
 }
 
 type APIServer struct {
@@ -25,6 +31,9 @@ type APIServer struct {
 	channelID string
 	sessionID string
 	distDir   string
+	skills    *skill.Registry
+	personas  *persona.Registry
+	memories  *memory.Index
 }
 
 func NewAPIServer(store Store, sender ChannelEventSender, hub *SSEHub, config ConfigView, channelID, sessionID, distDir string) *APIServer {
@@ -44,6 +53,12 @@ func (s *APIServer) UseSessionStore(sessions SessionStore) {
 	s.sessions = sessions
 }
 
+func (s *APIServer) UseAssets(skills *skill.Registry, personas *persona.Registry, memories *memory.Index) {
+	s.skills = skills
+	s.personas = personas
+	s.memories = memories
+}
+
 func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux := http.NewServeMux()
 
@@ -57,7 +72,13 @@ func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux.HandleFunc("/api/sessions", s.handleListSessions)
 	mux.HandleFunc("/api/message", s.handlePostMessage)
 	mux.HandleFunc("/api/confirmation", s.handlePostConfirmation)
-	mux.HandleFunc("/api/config", s.handleGetConfig)
+	mux.HandleFunc("/api/config", s.handleConfig)
+	mux.HandleFunc("/api/skills/", s.handleGetSkill)
+	mux.HandleFunc("/api/skills", s.handleListSkills)
+	mux.HandleFunc("/api/personas/", s.handleGetPersona)
+	mux.HandleFunc("/api/personas", s.handleListPersonas)
+	mux.HandleFunc("/api/memory/", s.handleGetMemory)
+	mux.HandleFunc("/api/memory", s.handleListMemory)
 	mux.HandleFunc("/api/events", s.handleSSE)
 
 	// Try API routes first
@@ -111,9 +132,12 @@ func (s *APIServer) apiAttemptRoutes(w http.ResponseWriter, r *http.Request) {
 
 func (s *APIServer) apiSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
-	if strings.HasSuffix(path, "/context") {
+	switch {
+	case strings.HasSuffix(path, "/context"):
 		s.handleGetSessionContext(w, r)
-	} else {
+	case strings.HasSuffix(path, "/pause"), strings.HasSuffix(path, "/resume"), strings.HasSuffix(path, "/expire"), strings.HasSuffix(path, "/delete"):
+		s.handleSessionAction(w, r)
+	default:
 		s.handleGetSession(w, r)
 	}
 }

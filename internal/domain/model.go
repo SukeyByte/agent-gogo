@@ -51,15 +51,17 @@ type Project struct {
 }
 
 type Task struct {
-	ID                 string
-	ProjectID          string
-	Title              string
-	Description        string
-	Status             TaskStatus
-	AcceptanceCriteria []string
-	DependsOn          []string
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	ID                   string
+	ProjectID            string
+	Title                string
+	Description          string
+	Phase                string
+	Status               TaskStatus
+	AcceptanceCriteria   []string
+	RequiredCapabilities []string
+	DependsOn            []string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 type TaskDependency struct {

@@ -36,3 +36,18 @@ func TestCapabilityTaskValidatorHonorsShellPolicy(t *testing.T) {
 		t.Fatalf("expected shell policy blocker, got %v", err)
 	}
 }
+
+func TestCapabilityTaskValidatorUsesStructuredRequiredCapabilities(t *testing.T) {
+	registry := capability.NewRegistry(capability.ToolSpec{Name: "file.read", RiskLevel: "low"})
+	validator := NewCapabilityTaskValidator(NewMinimalTaskValidator(), registry, capability.Policy{})
+	err := validator.ValidateTask(context.Background(), domain.Task{
+		ProjectID:            "project",
+		Title:                "Ambiguous task",
+		Description:          "No browser wording here",
+		AcceptanceCriteria:   []string{"accepted"},
+		RequiredCapabilities: []string{"browser"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "browser") {
+		t.Fatalf("expected structured browser capability blocker, got %v", err)
+	}
+}

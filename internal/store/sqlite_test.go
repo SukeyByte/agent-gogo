@@ -28,16 +28,25 @@ func TestSQLiteStoreCreatesProjectTaskAttemptAndEvents(t *testing.T) {
 	}
 
 	task, err := store.CreateTask(ctx, domain.Task{
-		ProjectID:          project.ID,
-		Title:              "Create schema",
-		Description:        "Build M1 database tables",
-		AcceptanceCriteria: []string{"schema exists", "tests pass"},
+		ProjectID:            project.ID,
+		Title:                "Create schema",
+		Description:          "Build M1 database tables",
+		Phase:                "Implementation",
+		AcceptanceCriteria:   []string{"schema exists", "tests pass"},
+		RequiredCapabilities: []string{"write", "verify"},
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 	if task.Status != domain.TaskStatusDraft {
 		t.Fatalf("expected DRAFT status, got %s", task.Status)
+	}
+	loadedTask, err := store.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if loadedTask.Phase != "Implementation" || strings.Join(loadedTask.RequiredCapabilities, ",") != "write,verify" {
+		t.Fatalf("expected task planning metadata to round-trip, got phase=%q caps=%v", loadedTask.Phase, loadedTask.RequiredCapabilities)
 	}
 
 	ready, err := store.TransitionTask(ctx, task.ID, domain.TaskStatusReady, "validated")

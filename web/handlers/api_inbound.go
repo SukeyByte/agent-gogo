@@ -26,6 +26,9 @@ func (s *APIServer) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	if req.SessionID == "" {
 		req.SessionID = s.sessionID
 	}
+	if s.handleConfigCommand(w, r, req.Text) {
+		return
+	}
 
 	if s.sender == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "runtime not available")

@@ -7,9 +7,12 @@ const skills = ref<SkillCard[]>([])
 const selectedSkill = ref<SkillCard | null>(null)
 const searchQuery = ref('')
 const loading = ref(true)
+const skillRoots = ref<string[]>([])
 
 onMounted(async () => {
-  skills.value = await api.listSkills()
+  const [loadedSkills, config] = await Promise.all([api.listSkills(), api.getConfig()])
+  skills.value = loadedSkills
+  skillRoots.value = config.storage.skill_roots
   loading.value = false
 })
 
@@ -44,8 +47,8 @@ function selectSkill(skill: SkillCard) {
     <div class="rounded-lg border border-gray-800 bg-gray-900 p-3">
       <h4 class="text-xs font-medium text-gray-500 uppercase mb-2">Skill Roots</h4>
       <div class="flex flex-wrap gap-2">
-        <span class="rounded bg-gray-800 px-2 py-1 text-xs font-mono text-gray-400">~/.claude/skills</span>
-        <span class="rounded bg-gray-800 px-2 py-1 text-xs font-mono text-gray-400">.claude/skills</span>
+        <span v-for="root in skillRoots" :key="root" class="rounded bg-gray-800 px-2 py-1 text-xs font-mono text-gray-400">{{ root }}</span>
+        <span v-if="skillRoots.length === 0" class="text-xs text-gray-600">No skill roots configured</span>
       </div>
     </div>
 

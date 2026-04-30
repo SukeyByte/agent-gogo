@@ -2,8 +2,11 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/sukeke/agent-gogo/internal/codeindex"
@@ -12,10 +15,16 @@ import (
 type codeIndexCache struct {
 	mu      sync.Mutex
 	entries map[string]codeindex.Index
+	path    string
 }
 
 func newCodeIndexCache() *codeIndexCache {
-	return &codeIndexCache{entries: map[string]codeindex.Index{}}
+	cache := &codeIndexCache{
+		entries: map[string]codeindex.Index{},
+		path:    codeIndexCachePath(),
+	}
+	cache.load()
+	return cache
 }
 
 func (c *codeIndexCache) get(ctx context.Context, root string, maxFiles int) (codeindex.Index, bool, error) {
@@ -36,6 +45,7 @@ func (c *codeIndexCache) get(ctx context.Context, root string, maxFiles int) (co
 	}
 	c.mu.Lock()
 	c.entries[key] = index
+	_ = c.saveLocked()
 	c.mu.Unlock()
 	return index, false, nil
 }
@@ -55,6 +65,63 @@ func (c *codeIndexCache) invalidate(root string) {
 			delete(c.entries, key)
 		}
 	}
+	_ = c.saveLocked()
+}
+
+func (c *codeIndexCache) load() {
+	if c == nil || strings.TrimSpace(c.path) == "" {
+		return
+	}
+	data, err := os.ReadFile(c.path)
+	if err != nil {
+		return
+	}
+	var disk struct {
+		Version int                        `json:"version"`
+		Entries map[string]codeindex.Index `json:"entries"`
+	}
+	if err := json.Unmarshal(data, &disk); err != nil || disk.Version != 1 {
+		return
+	}
+	if disk.Entries != nil {
+		c.entries = disk.Entries
+	}
+}
+
+func (c *codeIndexCache) saveLocked() error {
+	if c == nil || strings.TrimSpace(c.path) == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(c.path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(struct {
+		Version int                        `json:"version"`
+		Entries map[string]codeindex.Index `json:"entries"`
+	}{Version: 1, Entries: c.entries}, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := c.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, c.path)
+}
+
+func codeIndexCachePath() string {
+	path := strings.TrimSpace(os.Getenv("AGENT_GOGO_CODE_INDEX_CACHE"))
+	if path == "off" || path == "false" {
+		return ""
+	}
+	if path == "" {
+		path = filepath.Join("data", "code_index.json")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return abs
 }
 
 func codeIndexCacheKey(root string, maxFiles int) string {

@@ -11,6 +11,7 @@ const selectedSession = ref<Session | null>(null)
 const sessionContext = ref<SessionContext | null>(null)
 const contextLoading = ref(false)
 const statusFilter = ref<string>('')
+const acting = ref<string>('')
 
 const filteredSessions = computed(() => {
   if (!statusFilter.value) return sessions.value
@@ -26,9 +27,13 @@ const statusCounts = computed(() => {
 })
 
 onMounted(async () => {
-  sessions.value = await api.listSessions()
+  await refreshSessions()
   loading.value = false
 })
+
+async function refreshSessions() {
+  sessions.value = await api.listSessions()
+}
 
 async function selectSession(session: Session) {
   selectedSession.value = session
@@ -41,6 +46,24 @@ async function selectSession(session: Session) {
 function closeDetail() {
   selectedSession.value = null
   sessionContext.value = null
+}
+
+async function runAction(action: 'pause' | 'resume' | 'expire' | 'delete') {
+  if (!selectedSession.value || acting.value) return
+  const id = selectedSession.value.id
+  acting.value = action
+  try {
+    if (action === 'pause') selectedSession.value = await api.pauseSession(id)
+    if (action === 'resume') selectedSession.value = await api.resumeSession(id)
+    if (action === 'expire') selectedSession.value = await api.expireSession(id)
+    if (action === 'delete') {
+      await api.deleteSession(id)
+      closeDetail()
+    }
+    await refreshSessions()
+  } finally {
+    acting.value = ''
+  }
 }
 
 function timeAgo(dateStr: string): string {
@@ -131,7 +154,13 @@ function truncate(s: string, len: number): string {
           <h3 class="text-base font-semibold text-gray-100">{{ selectedSession.title || 'Untitled session' }}</h3>
           <p class="text-xs text-gray-500 font-mono mt-1">{{ selectedSession.id }}</p>
         </div>
-        <button @click="closeDetail" class="text-gray-500 hover:text-gray-300 text-sm">✕</button>
+        <div class="flex items-center gap-2">
+          <button v-if="selectedSession.status === 'ACTIVE'" @click="runAction('pause')" :disabled="!!acting" class="rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50">Pause</button>
+          <button v-if="selectedSession.status === 'PAUSED' || selectedSession.status === 'ACTIVE'" @click="runAction('resume')" :disabled="!!acting" class="rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50">Resume</button>
+          <button @click="runAction('expire')" :disabled="!!acting" class="rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-400 hover:bg-gray-800 disabled:opacity-50">Expire</button>
+          <button @click="runAction('delete')" :disabled="!!acting" class="rounded border border-red-900/60 px-3 py-1.5 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-50">Delete</button>
+          <button @click="closeDetail" class="text-gray-500 hover:text-gray-300 text-sm">x</button>
+        </div>
       </div>
 
       <!-- Session Info Grid -->

@@ -360,6 +360,37 @@ func TestBuiltinRuntimeCodeIndexCacheInvalidatesOnlyOnWrites(t *testing.T) {
 	}
 }
 
+func TestBuiltinRuntimeCodeIndexCachePersistsToDisk(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "internal"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "internal", "sample.go"), []byte("package internal\n\nfunc PersistedWidget() {}\n"), 0o644); err != nil {
+		t.Fatalf("write sample: %v", err)
+	}
+	cachePath := filepath.Join(t.TempDir(), "code_index.json")
+	t.Setenv("AGENT_GOGO_CODE_INDEX_CACHE", cachePath)
+
+	firstRuntime := NewBuiltinRuntime(nil, root)
+	first, err := firstRuntime.Call(ctx, CallRequest{Name: "code.index"})
+	if err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+	if first.Result.Output["cache_hit"].(bool) {
+		t.Fatal("expected cold cache before disk file is written")
+	}
+
+	secondRuntime := NewBuiltinRuntime(nil, root)
+	second, err := secondRuntime.Call(ctx, CallRequest{Name: "code.index"})
+	if err != nil {
+		t.Fatalf("second index: %v", err)
+	}
+	if !second.Result.Output["cache_hit"].(bool) {
+		t.Fatal("expected warm cache loaded from disk")
+	}
+}
+
 func TestBuiltinRuntimeBlocksGitInternalsForFileTools(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

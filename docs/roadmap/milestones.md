@@ -505,3 +505,32 @@ M1 和 M3 是执行系统的骨架，必须保持简单、可测、可恢复。M
 1. 不实现 session 暂停/恢复/过期清理的操作按钮（需后端 POST 接口）。
 2. 不实现 project 看板拖拽排序。
 3. 不实现实时 SSE 推送 session 状态变化。
+
+### M10.6：Generic Agent Loop 收尾与 Web Console 操作闭环
+
+目标：给 M10 收尾，补齐结构拆分、规划前探测、分层任务元数据、Web Console 管理 API、session 恢复执行和 code index 磁盘缓存，让通用 agent 主路径更接近 PRD/架构定义。
+
+当前状态：已实现。`internal/app/app.go` 拆出 CLI/Web/provider/browser 组装，`internal/tools/runtime.go` 拆出类型、注册表和内置工具注册；Planner 输出支持 `phases` 与任务级 `required_capabilities`；Runtime 在 Planner 前运行只读 DiscoveryLoop；Validator 优先使用结构化能力字段；Web Console 配置、Skills、Personas、Memory、session 操作和确认 ID 已接后端；code index cache 可持久化到 `data/code_index.json`。
+
+范围：
+
+1. 结构拆分：`app/cli.go`、`app/providers.go`、`app/web.go`、`tools/types.go`、`tools/registry.go`、`tools/builtin_runtime.go`、`runtime/context_assets.go`。
+2. 规划质量：新增 `internal/discovery`，在 Planner 调用前用 `code.index`、`code.search`、`file.read`、`git.status` 和 memory search 收集上下文并注入 planning context。
+3. 分层任务：Task 持久化 `phase` 与 `required_capabilities`，Planner schema/prompt 要求 `phases + tasks`，Capability Validator 精确校验结构化能力。
+4. Web Console：`POST /api/config` 与 `/config {...}` 命令热更新安全策略和上下文预算；Skills/Personas/Memory 页面读取真实 registry/index；确认 SSE 携带 `confirmation_id`。
+5. Session 操作：新增 Pause / Resume / Expire / Delete POST 接口，Resume 会触发关联 project 的 ready task 继续执行。
+6. 工程缓存：code index cache 落盘并在写入/patch 后失效，重启后可复用。
+
+验收标准：
+
+1. `go test ./...` 通过。
+2. `cd web/frontend && npm run build` 通过。
+3. `RUN_DEEPSEEK_SMOKE=1 DEEPSEEK_API_KEY=... go test ./internal/planner -run TestDeepSeekPlannerStructuredSmoke -count=1 -timeout=5m` 通过，覆盖代码、网页、文档三类真实 LLM 规划。
+4. Web Console API 验证：`/api/config` 可读写，`/api/skills` 返回真实 skill registry，`/api/memory` 返回真实 memory index。
+5. Computer Use 验证：本地打开 `http://127.0.0.1:18080`，Dashboard、Skills、Memory、Config 页面可见且数据正常渲染。
+
+非目标：
+
+1. 不在 M10.6 做完整语义级 Tester/Reviewer 断言系统。
+2. 不把 Web Console 做成完整可编辑 Skill/Persona/Memory 管理器；本阶段先完成只读真实数据与 session/config 操作闭环。
+3. 不删除历史 demo 包；主入口和 Web/CLI 主路径已经走 Generic Runtime。

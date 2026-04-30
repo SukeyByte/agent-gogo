@@ -14,8 +14,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
+    phase TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL,
     acceptance_criteria TEXT NOT NULL DEFAULT '[]',
+    required_capabilities TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -136,4 +138,3 @@ CREATE TABLE IF NOT EXISTS artifacts (
 
 CREATE INDEX IF NOT EXISTS idx_artifacts_project_id ON artifacts(project_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_attempt_id ON artifacts(attempt_id);
-

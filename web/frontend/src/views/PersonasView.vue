@@ -8,11 +8,6 @@ const selectedPersona = ref<PersonaCard | null>(null)
 const filterType = ref<string>('all')
 const loading = ref(true)
 
-onMounted(async () => {
-  personas.value = await api.listPersonas()
-  loading.value = false
-})
-
 const personaTypes = ['all', 'main', 'channel', 'project', 'role']
 
 const filteredPersonas = ref<PersonaCard[]>([])

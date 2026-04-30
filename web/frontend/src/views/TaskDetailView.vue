@@ -46,11 +46,11 @@ async function taskAction(action: string) {
       task.value = await api.getTask(taskId)
     } else if (action === 'approve') {
       const att = attempts.value[0]
-      await api.sendConfirmation(task.value?.project_id || '', taskId, att?.id || '', '', true, 'Approved via web console')
+      await api.sendConfirmation('', task.value?.project_id || '', taskId, att?.id || '', '', true, 'Approved via web console')
       task.value = await api.getTask(taskId)
     } else if (action === 'reject') {
       const att = attempts.value[0]
-      await api.sendConfirmation(task.value?.project_id || '', taskId, att?.id || '', '', false, 'Rejected via web console')
+      await api.sendConfirmation('', task.value?.project_id || '', taskId, att?.id || '', '', false, 'Rejected via web console')
       task.value = await api.getTask(taskId)
     } else {
       // skip/fix — send as channel message

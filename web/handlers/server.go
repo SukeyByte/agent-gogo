@@ -24,14 +24,21 @@ type Store interface {
 }
 
 type ConfigView struct {
-	WorkspacePath string
-	SQLitePath    string
-	ArtifactPath  string
-	LogPath       string
-	SkillRoots    []string
-	PersonaPath   string
-	ChannelID     string
-	SessionID     string
+	WorkspacePath          string   `json:"workspace_path"`
+	SQLitePath             string   `json:"sqlite_path"`
+	ArtifactPath           string   `json:"artifact_path"`
+	LogPath                string   `json:"log_path"`
+	SkillRoots             []string `json:"skill_roots"`
+	PersonaPath            string   `json:"persona_path"`
+	ChannelID              string   `json:"channel_id"`
+	SessionID              string   `json:"session_id"`
+	ContextMaxChars        int      `json:"context_max_chars"`
+	MaxTasksPerProject     int      `json:"max_tasks_per_project"`
+	RequireConfirmHighRisk bool     `json:"require_confirm_high_risk"`
+	AllowShell             bool     `json:"allow_shell"`
+	ShellAllowlist         []string `json:"shell_allowlist"`
+	LLMTimeoutSeconds      int      `json:"llm_timeout_seconds"`
+	BrowserTimeoutSeconds  int      `json:"browser_timeout_seconds"`
 }
 
 type Server struct {
