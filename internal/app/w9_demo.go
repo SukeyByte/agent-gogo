@@ -85,7 +85,7 @@ func RunTaskAwarenessDemo(ctx context.Context, goal string, opts Options, writer
 	toolRuntime.UseSecurityPolicy(tools.SecurityPolicy{
 		AllowShell:                false,
 		RequireConfirmationAtRisk: confirmationRisk(cfg),
-	}, tools.AutoConfirmationGate{Approved: true})
+	}, newConfirmationGate(writer))
 	promptPath := filepath.ToSlash(filepath.Join("w9", project.ID+"-second-task-context.txt"))
 	promptArtifact, err := toolRuntime.Call(ctx, tools.CallRequest{
 		AttemptID: second.Attempt.ID,

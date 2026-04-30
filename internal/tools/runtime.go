@@ -149,7 +149,7 @@ func NewBuiltinRuntime(store Store, root string) *Runtime {
 	})
 	runtime.Register(Spec{
 		Name:        "file.read",
-		Description: "Read a workspace file.",
+		Description: "Read a workspace file by relative path. Use this instead of shell.run for file contents.",
 		RiskLevel:   "low",
 	}, func(ctx context.Context, args map[string]any) (Result, error) {
 		output, err := readFile(ctx, root, args)
@@ -196,7 +196,7 @@ func NewBuiltinRuntime(store Store, root string) *Runtime {
 	})
 	runtime.Register(Spec{
 		Name:          "test.run",
-		Description:   "Run a configured test command.",
+		Description:   "Run the configured test command. Use this instead of shell.run for test validation.",
 		RiskLevel:     "medium",
 		RequiresShell: true,
 	}, func(ctx context.Context, args map[string]any) (Result, error) {
@@ -223,7 +223,7 @@ func NewBuiltinRuntime(store Store, root string) *Runtime {
 	})
 	runtime.Register(Spec{
 		Name:          "shell.run",
-		Description:   "Run an allowlisted shell command in the workspace.",
+		Description:   "Run one allowlisted exec-style command in the workspace. No pipes, redirects, semicolons, glob wildcards, command substitution, environment assignments, or chained commands.",
 		RiskLevel:     "medium",
 		RequiresShell: true,
 	}, func(ctx context.Context, args map[string]any) (Result, error) {
@@ -414,6 +414,7 @@ func (r *Runtime) Call(ctx context.Context, req CallRequest) (CallResponse, erro
 	if err := ctx.Err(); err != nil {
 		return CallResponse{}, err
 	}
+	req = normalizeCallRequest(req)
 	inputJSON, err := stableJSON(req.Args)
 	if err != nil {
 		return CallResponse{}, err
@@ -459,6 +460,22 @@ func (r *Runtime) Call(ctx context.Context, req CallRequest) (CallResponse, erro
 		return CallResponse{Result: result, ToolCall: call}, fmt.Errorf("tool %s failed: %s", req.Name, result.Error)
 	}
 	return CallResponse{Result: result, ToolCall: call}, nil
+}
+
+func normalizeCallRequest(req CallRequest) CallRequest {
+	req.Args = copyArgs(req.Args)
+	if req.Name != "test.run" {
+		return req
+	}
+	command, _ := req.Args["command"].(string)
+	command = strings.TrimSpace(command)
+	switch {
+	case command == "":
+		req.Args["command"] = "go test ./..."
+	case command == "./..." || command == "..." || strings.HasPrefix(command, "./"):
+		req.Args["command"] = "go test " + command
+	}
+	return req
 }
 
 func (r *Runtime) resolveCapability(ctx context.Context, spec Spec, req CallRequest) error {
@@ -777,6 +794,9 @@ func runCommand(ctx context.Context, root string, command string) (string, error
 	if command == "" {
 		return "", errors.New("command is required")
 	}
+	if token := unsupportedShellToken(command); token != "" {
+		return "", fmt.Errorf("shell.run supports one exec-style command; unsupported shell token %q", token)
+	}
 	parts := strings.Fields(command)
 	if len(parts) == 0 {
 		return "", errors.New("command is required")
@@ -785,6 +805,15 @@ func runCommand(ctx context.Context, root string, command string) (string, error
 	cmd.Dir = root
 	data, err := cmd.CombinedOutput()
 	return truncate(string(data), 4000), err
+}
+
+func unsupportedShellToken(command string) string {
+	for _, token := range []string{"&&", "||", "$(", "|", ";", ">", "<", "`", "*", "?"} {
+		if strings.Contains(command, token) {
+			return token
+		}
+	}
+	return ""
 }
 
 func gitBranch(ctx context.Context, root string, args map[string]any) (map[string]any, error) {

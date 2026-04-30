@@ -76,7 +76,9 @@ func (t *GenericEvidenceTester) Test(ctx context.Context, task domain.Task, atte
 func genericEvidenceFailure(task domain.Task, observations []domain.Observation, calls []domain.ToolCall) string {
 	hasFinish := false
 	hasStateEvidence := false
+	hasTestRun := false
 	hasTestsPassed := false
+	successfulCalls := 0
 	for _, observation := range observations {
 		switch observation.Type {
 		case "agent.finish":
@@ -85,16 +87,27 @@ func genericEvidenceFailure(task domain.Task, observations []domain.Observation,
 			hasStateEvidence = strings.TrimSpace(observation.Summary) != ""
 		}
 		if observation.Type == "state.tests_passed" {
+			hasTestRun = true
 			hasTestsPassed = true
+		}
+		if observation.Type == "state.tests_failed" && taskRequiresDiagnosticTestRun(task) {
+			hasTestRun = true
+			hasStateEvidence = true
 		}
 	}
 	for _, call := range calls {
-		if call.Status == domain.ToolCallStatusFailed {
-			return "failed tool call exists: " + call.Name + " " + call.Error
+		if call.Status == domain.ToolCallStatusSucceeded {
+			successfulCalls++
 		}
-		if call.Name == "test.run" && call.Status == domain.ToolCallStatusSucceeded {
-			hasTestsPassed = true
+		if call.Name == "test.run" {
+			hasTestRun = true
+			if call.Status == domain.ToolCallStatusSucceeded {
+				hasTestsPassed = true
+			}
 		}
+	}
+	if len(calls) > 0 && successfulCalls == 0 && !(taskRequiresDiagnosticTestRun(task) && hasTestRun) {
+		return "no successful tool calls recorded"
 	}
 	if !hasFinish {
 		return "missing agent.finish observation"
@@ -102,15 +115,64 @@ func genericEvidenceFailure(task domain.Task, observations []domain.Observation,
 	if !hasStateEvidence {
 		return "missing interpreted state evidence from tool execution"
 	}
-	if taskRequiresTests(task) && !hasTestsPassed {
+	if taskRequiresPassingTests(task) && !hasTestsPassed {
 		return "task acceptance requires tests, but no passing test.run evidence exists"
+	}
+	if taskRequiresDiagnosticTestRun(task) && !hasTestRun {
+		return "task acceptance requires test.run evidence"
 	}
 	return ""
 }
 
-func taskRequiresTests(task domain.Task) bool {
+func taskRequiresPassingTests(task domain.Task) bool {
 	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
-	for _, marker := range []string{"go test", "tests pass", "run tests", "测试", "驗證", "验证"} {
+	if strings.Contains(text, "go test") && (strings.Contains(text, "pass") || strings.Contains(text, "ok") || strings.Contains(text, "通过") || strings.Contains(text, "退出码0") || strings.Contains(text, "status 0")) {
+		return true
+	}
+	for _, marker := range []string{
+		"tests pass",
+		"tests passed",
+		"test passed",
+		"passing tests",
+		"all tests pass",
+		"all tests passed",
+		"go test ./... returns ok",
+		"returns ok",
+		"no fail",
+		"验证所有测试",
+		"驗證所有測試",
+		"所有测试通过",
+		"所有測試通過",
+		"验证修改成功",
+		"確認所有測試",
+		"确认所有测试",
+		"均通过",
+		"全部通过",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func taskRequiresDiagnosticTestRun(task domain.Task) bool {
+	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
+	if taskRequiresPassingTests(task) {
+		return false
+	}
+	for _, marker := range []string{
+		"go test",
+		"run tests",
+		"test output",
+		"failing test",
+		"failure output",
+		"运行失败测试",
+		"获取失败",
+		"捕获失败",
+		"失败输出",
+		"执行 go test",
+	} {
 		if strings.Contains(text, marker) {
 			return true
 		}

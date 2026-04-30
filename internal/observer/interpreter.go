@@ -105,6 +105,13 @@ func InterpretToolCall(call domain.ToolCall, result tools.Result) State {
 		state.Type = "state.tool_failed"
 		state.FailureReason = firstNonEmpty(result.Error, call.Error, "tool failed")
 		state.Summary = fmt.Sprintf("%s failed: %s", call.Name, state.FailureReason)
+		switch call.Name {
+		case "test.run":
+			state.Type = "state.tests_failed"
+			state.Summary = firstNonEmpty(stringOutput(result.Output, "summary"), state.Summary)
+		case "shell.run":
+			state.Type = "state.command_failed"
+		}
 		state.Signals["failure_reason"] = state.FailureReason
 		return state
 	}
@@ -153,7 +160,7 @@ func InterpretToolCall(call domain.ToolCall, result tools.Result) State {
 		state.Status = StateObserved
 		state.Type = "state.repository_observed"
 		state.Summary = call.Name + " captured repository evidence"
-	case "browser.open", "browser.click":
+	case "browser.open", "browser.click", "browser.type", "browser.input", "browser.wait", "browser.extract", "browser.dom_summary", "browser.screenshot":
 		state.Status = StateObserved
 		state.Type = "state.browser_observed"
 		state.Summary = call.Name + " captured browser state"

@@ -46,6 +46,38 @@ func (r *Runtime) Click(ctx context.Context, text string) (Snapshot, error) {
 	return snapshotFromResult(result, "browser.click"), nil
 }
 
+func (r *Runtime) TypeText(ctx context.Context, text string) (Snapshot, error) {
+	result, err := r.provider.Call(ctx, "type", map[string]any{"text": text})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return snapshotFromResult(result, "browser.type"), nil
+}
+
+func (r *Runtime) Input(ctx context.Context, selector string, value string) (Snapshot, error) {
+	result, err := r.provider.Call(ctx, "input", map[string]any{"selector": selector, "value": value})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return snapshotFromResult(result, "browser.input"), nil
+}
+
+func (r *Runtime) Wait(ctx context.Context, text string, timeoutMS int) (Snapshot, error) {
+	result, err := r.provider.Call(ctx, "wait", map[string]any{"text": text, "timeout_ms": timeoutMS})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return snapshotFromResult(result, "browser.wait"), nil
+}
+
+func (r *Runtime) Extract(ctx context.Context, query string) (Snapshot, error) {
+	result, err := r.provider.Call(ctx, "extract", map[string]any{"query": query})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return snapshotFromResult(result, "browser.extract"), nil
+}
+
 func (r *Runtime) Screenshot(ctx context.Context) (Snapshot, error) {
 	result, err := r.provider.Call(ctx, "screenshot", nil)
 	if err != nil {

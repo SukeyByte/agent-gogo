@@ -159,6 +159,30 @@ func TestChromeMCPBrowserProviderUsesConfiguredEndpoint(t *testing.T) {
 	}
 }
 
+func TestFetchBrowserProviderExtractsAfterOpen(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<html><body><main>Example Domain</main></body></html>`))
+	}))
+	defer server.Close()
+
+	browser := NewFetchBrowserProvider(FetchBrowserProviderConfig{
+		HTTPClient: server.Client(),
+	})
+	if _, err := browser.Call(context.Background(), "open", map[string]any{"url": server.URL}); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	result, err := browser.Call(context.Background(), "extract", map[string]any{"query": "main"})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if result.DOMSummary != "Example Domain" {
+		t.Fatalf("unexpected DOM summary %q", result.DOMSummary)
+	}
+	if result.Metadata["action"] != "extract" {
+		t.Fatalf("unexpected metadata %#v", result.Metadata)
+	}
+}
+
 func TestMemoryStorageProvider(t *testing.T) {
 	storage := NewMemoryStorageProvider()
 	ctx := context.Background()

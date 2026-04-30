@@ -52,14 +52,34 @@ func (p *FetchBrowserProvider) Call(ctx context.Context, action string, args map
 		if p.lastURL == "" {
 			return BrowserProviderResult{}, errors.New("browser page is not open")
 		}
-		return BrowserProviderResult{
-			URL:        p.lastURL,
-			DOMSummary: p.lastSummary,
-			Metadata: map[string]string{
-				"status": p.lastStatus,
-				"source": "http_fetch",
-			},
-		}, nil
+		return p.currentResult("dom_summary"), nil
+	case "wait":
+		if p.lastURL == "" {
+			return BrowserProviderResult{}, errors.New("browser page is not open")
+		}
+		text, _ := args["text"].(string)
+		if strings.TrimSpace(text) == "" || strings.Contains(strings.ToLower(p.lastSummary), strings.ToLower(strings.TrimSpace(text))) {
+			return p.currentResult("wait"), nil
+		}
+		timeout := durationFromMS(args["timeout_ms"], 10000)
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return BrowserProviderResult{}, ctx.Err()
+		case <-timer.C:
+			return BrowserProviderResult{}, fmt.Errorf("timed out waiting for text %q", text)
+		}
+	case "extract":
+		if p.lastURL == "" {
+			return BrowserProviderResult{}, errors.New("browser page is not open")
+		}
+		query, _ := args["query"].(string)
+		result := p.currentResult("extract")
+		if strings.TrimSpace(query) != "" {
+			result.Metadata["query"] = strings.TrimSpace(query)
+		}
+		return result, nil
 	case "screenshot":
 		if p.lastURL == "" {
 			return BrowserProviderResult{}, errors.New("browser page is not open")
@@ -75,6 +95,32 @@ func (p *FetchBrowserProvider) Call(ctx context.Context, action string, args map
 	default:
 		return BrowserProviderResult{}, fmt.Errorf("unsupported browser action %q", action)
 	}
+}
+
+func (p *FetchBrowserProvider) currentResult(action string) BrowserProviderResult {
+	return BrowserProviderResult{
+		URL:        p.lastURL,
+		DOMSummary: p.lastSummary,
+		Metadata: map[string]string{
+			"status": p.lastStatus,
+			"source": "http_fetch",
+			"action": action,
+		},
+	}
+}
+
+func durationFromMS(value any, fallback int) time.Duration {
+	switch typed := value.(type) {
+	case int:
+		if typed > 0 {
+			return time.Duration(typed) * time.Millisecond
+		}
+	case float64:
+		if typed > 0 {
+			return time.Duration(typed) * time.Millisecond
+		}
+	}
+	return time.Duration(fallback) * time.Millisecond
 }
 
 func (p *FetchBrowserProvider) open(ctx context.Context, url string) (BrowserProviderResult, error) {

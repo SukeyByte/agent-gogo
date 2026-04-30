@@ -65,6 +65,31 @@ func TestGenericEvidenceTesterRequiresTestRunWhenAcceptanceMentionsTests(t *test
 	}
 }
 
+func TestTaskRequiresTestsIgnoresReadingTestFiles(t *testing.T) {
+	task := domain.Task{
+		Title:              "读取项目结构和测试文件",
+		Description:        "读取当前 Go 模块的所有源文件和测试文件，了解项目结构和测试内容",
+		AcceptanceCriteria: []string{"已读取所有 .go 源文件和 _test.go 测试文件"},
+	}
+	if taskRequiresPassingTests(task) || taskRequiresDiagnosticTestRun(task) {
+		t.Fatal("reading test files should not require passing test.run evidence")
+	}
+}
+
+func TestTaskRequiresDiagnosticTestRunAllowsFailureOutputTask(t *testing.T) {
+	task := domain.Task{
+		Title:              "运行失败测试并分析错误",
+		Description:        "运行 go test ./... 获取失败测试的详细输出，分析错误原因。",
+		AcceptanceCriteria: []string{"输出包含 FAIL 关键字和详细错误栈的完整测试输出"},
+	}
+	if !taskRequiresDiagnosticTestRun(task) {
+		t.Fatal("expected failing-test diagnostic task to require test.run evidence")
+	}
+	if taskRequiresPassingTests(task) {
+		t.Fatal("diagnostic failure task should not require passing test.run evidence")
+	}
+}
+
 func genericEvidenceFixture(t *testing.T) (*store.SQLiteStore, domain.Project, domain.Task, domain.TaskAttempt) {
 	t.Helper()
 	ctx := context.Background()

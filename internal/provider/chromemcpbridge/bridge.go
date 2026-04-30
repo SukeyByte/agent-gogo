@@ -106,6 +106,19 @@ func (b *Bridge) call(ctx context.Context, req callRequest) (browserResult, erro
 	case "click":
 		text, _ := req.Args["text"].(string)
 		return b.click(ctx, text)
+	case "type":
+		text, _ := req.Args["text"].(string)
+		return b.typeText(ctx, text)
+	case "input":
+		selector, _ := req.Args["selector"].(string)
+		value, _ := req.Args["value"].(string)
+		return b.input(ctx, selector, value)
+	case "wait":
+		text, _ := req.Args["text"].(string)
+		return b.wait(ctx, text, timeoutMSFromArg(req.Args["timeout_ms"], 10000))
+	case "extract":
+		query, _ := req.Args["query"].(string)
+		return b.extract(ctx, query)
 	case "dom_summary":
 		return b.domSummary(ctx)
 	case "screenshot":
@@ -259,6 +272,210 @@ return {clicked:true, clickedText:match.label, score:match.score, url:location.h
 			"action":   "click",
 			"text":     text,
 		},
+	}, nil
+}
+
+func (b *Bridge) typeText(ctx context.Context, text string) (browserResult, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return browserResult{}, errors.New("type text is required")
+	}
+	last, err := b.lastTarget()
+	if err != nil {
+		return browserResult{}, err
+	}
+	session, err := dialCDP(ctx, last.WebSocketDebuggerURL)
+	if err != nil {
+		return browserResult{}, err
+	}
+	textJSON, _ := json.Marshal(text)
+	expression := fmt.Sprintf(`(() => {
+const text = %s;
+const writable = (el) => el && (el.isContentEditable || el.matches('input,textarea,[role="textbox"]'));
+const candidates = [document.activeElement, ...Array.from(document.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"]'))];
+const el = candidates.find(writable);
+if (!el) return {ok:false, reason:'no writable field', url:location.href};
+el.focus();
+if (el.isContentEditable) {
+  document.execCommand('insertText', false, text);
+} else {
+  const value = String(el.value || '');
+  const start = Number.isInteger(el.selectionStart) ? el.selectionStart : value.length;
+  const end = Number.isInteger(el.selectionEnd) ? el.selectionEnd : value.length;
+  el.value = value.slice(0, start) + text + value.slice(end);
+  el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:text}));
+  el.dispatchEvent(new Event('change', {bubbles:true}));
+}
+return {ok:true, url:location.href, text:document.body ? document.body.innerText : ''};
+})()`, string(textJSON))
+	response, err := session.Call(ctx, "Runtime.evaluate", map[string]any{
+		"expression":    expression,
+		"returnByValue": true,
+	})
+	_ = session.Close()
+	if err != nil {
+		return browserResult{}, err
+	}
+	result, _ := response["result"].(map[string]any)
+	value, _ := result["value"].(map[string]any)
+	ok, _ := value["ok"].(bool)
+	if !ok {
+		reason, _ := value["reason"].(string)
+		return browserResult{}, fmt.Errorf("type failed: %s", firstNonEmpty(reason, "no writable field"))
+	}
+	summary, currentURL, err := b.extractText(ctx, last.WebSocketDebuggerURL)
+	if err != nil {
+		return browserResult{}, err
+	}
+	last.URL = currentURL
+	b.mu.Lock()
+	b.last = last
+	b.mu.Unlock()
+	return browserResult{
+		URL:        currentURL,
+		DOMSummary: summary,
+		Metadata: map[string]string{
+			"provider": "chrome_mcp",
+			"target":   last.ID,
+			"action":   "type",
+		},
+	}, nil
+}
+
+func (b *Bridge) input(ctx context.Context, selector string, value string) (browserResult, error) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return browserResult{}, errors.New("input selector is required")
+	}
+	last, err := b.lastTarget()
+	if err != nil {
+		return browserResult{}, err
+	}
+	session, err := dialCDP(ctx, last.WebSocketDebuggerURL)
+	if err != nil {
+		return browserResult{}, err
+	}
+	selectorJSON, _ := json.Marshal(selector)
+	valueJSON, _ := json.Marshal(value)
+	expression := fmt.Sprintf(`(() => {
+const selector = %s;
+const value = %s;
+const el = document.querySelector(selector);
+if (!el) return {ok:false, reason:'selector not found', url:location.href};
+el.scrollIntoView({block:'center', inline:'center'});
+el.focus();
+if (el.isContentEditable) {
+  el.textContent = value;
+} else if ('value' in el) {
+  el.value = value;
+} else {
+  el.setAttribute('value', value);
+}
+el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertReplacementText', data:value}));
+el.dispatchEvent(new Event('change', {bubbles:true}));
+return {ok:true, url:location.href, text:document.body ? document.body.innerText : ''};
+})()`, string(selectorJSON), string(valueJSON))
+	response, err := session.Call(ctx, "Runtime.evaluate", map[string]any{
+		"expression":    expression,
+		"returnByValue": true,
+	})
+	_ = session.Close()
+	if err != nil {
+		return browserResult{}, err
+	}
+	result, _ := response["result"].(map[string]any)
+	jsValue, _ := result["value"].(map[string]any)
+	ok, _ := jsValue["ok"].(bool)
+	if !ok {
+		reason, _ := jsValue["reason"].(string)
+		return browserResult{}, fmt.Errorf("input failed for selector %q: %s", selector, firstNonEmpty(reason, "not found"))
+	}
+	summary, currentURL, err := b.extractText(ctx, last.WebSocketDebuggerURL)
+	if err != nil {
+		return browserResult{}, err
+	}
+	last.URL = currentURL
+	b.mu.Lock()
+	b.last = last
+	b.mu.Unlock()
+	return browserResult{
+		URL:        currentURL,
+		DOMSummary: summary,
+		Metadata: map[string]string{
+			"provider": "chrome_mcp",
+			"target":   last.ID,
+			"action":   "input",
+			"selector": selector,
+		},
+	}, nil
+}
+
+func (b *Bridge) wait(ctx context.Context, text string, timeoutMS int) (browserResult, error) {
+	last, err := b.lastTarget()
+	if err != nil {
+		return browserResult{}, err
+	}
+	target := strings.ToLower(strings.TrimSpace(text))
+	timeout := time.Duration(timeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		summary, currentURL, err := b.extractText(ctx, last.WebSocketDebuggerURL)
+		if err == nil && (target == "" || strings.Contains(strings.ToLower(summary), target)) {
+			last.URL = currentURL
+			b.mu.Lock()
+			b.last = last
+			b.mu.Unlock()
+			return browserResult{
+				URL:        currentURL,
+				DOMSummary: summary,
+				Metadata: map[string]string{
+					"provider": "chrome_mcp",
+					"target":   last.ID,
+					"action":   "wait",
+					"text":     text,
+				},
+			}, nil
+		}
+		if time.Now().After(deadline) {
+			return browserResult{}, fmt.Errorf("timed out waiting for text %q", text)
+		}
+		select {
+		case <-ctx.Done():
+			return browserResult{}, ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+}
+
+func (b *Bridge) extract(ctx context.Context, query string) (browserResult, error) {
+	last, err := b.lastTarget()
+	if err != nil {
+		return browserResult{}, err
+	}
+	query = strings.TrimSpace(query)
+	summary, currentURL, err := b.extractQueryText(ctx, last.WebSocketDebuggerURL, query)
+	if err != nil {
+		return browserResult{}, err
+	}
+	last.URL = currentURL
+	b.mu.Lock()
+	b.last = last
+	b.mu.Unlock()
+	metadata := map[string]string{
+		"provider": "chrome_mcp",
+		"target":   last.ID,
+		"action":   "extract",
+	}
+	if query != "" {
+		metadata["query"] = query
+	}
+	return browserResult{
+		URL:        currentURL,
+		DOMSummary: summary,
+		Metadata:   metadata,
 	}, nil
 }
 
@@ -504,6 +721,44 @@ return {url: location.href, text: (text || "").replace(/\s+/g, " ").trim().slice
 	return text, currentURL, nil
 }
 
+func (b *Bridge) extractQueryText(ctx context.Context, websocketURL string, query string) (string, string, error) {
+	if strings.TrimSpace(query) == "" {
+		return b.extractText(ctx, websocketURL)
+	}
+	session, err := dialCDP(ctx, websocketURL)
+	if err != nil {
+		return "", "", err
+	}
+	defer session.Close()
+	queryJSON, _ := json.Marshal(query)
+	expression := fmt.Sprintf(`(() => {
+const query = %s;
+let text = "";
+try {
+  const nodes = Array.from(document.querySelectorAll(query));
+  if (nodes.length > 0) {
+    text = nodes.map((node) => node.innerText || node.textContent || "").join(" ");
+  }
+} catch (error) {}
+if (!text) {
+  text = document.body ? document.body.innerText : document.documentElement.innerText;
+}
+return {url: location.href, text: (text || "").replace(/\s+/g, " ").trim().slice(0, %d)};
+})()`, string(queryJSON), b.config.MaxSummaryLength)
+	response, err := session.Call(ctx, "Runtime.evaluate", map[string]any{
+		"expression":    expression,
+		"returnByValue": true,
+	})
+	if err != nil {
+		return "", "", err
+	}
+	result, _ := response["result"].(map[string]any)
+	value, _ := result["value"].(map[string]any)
+	text, _ := value["text"].(string)
+	currentURL, _ := value["url"].(string)
+	return text, currentURL, nil
+}
+
 func (b *Bridge) lastTarget() (target, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -687,6 +942,29 @@ func writeWSFrame(rw *bufio.ReadWriter, payload []byte) error {
 		return err
 	}
 	return rw.Flush()
+}
+
+func timeoutMSFromArg(value any, fallback int) int {
+	switch typed := value.(type) {
+	case int:
+		if typed > 0 {
+			return typed
+		}
+	case float64:
+		if typed > 0 {
+			return int(typed)
+		}
+	}
+	return fallback
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func readWSFrame(rw *bufio.ReadWriter) ([]byte, error) {

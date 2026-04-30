@@ -24,6 +24,23 @@ func TestInterpretToolCallClassifiesFileWrite(t *testing.T) {
 	}
 }
 
+func TestInterpretToolCallClassifiesBrowserActions(t *testing.T) {
+	for _, toolName := range []string{"browser.open", "browser.type", "browser.input", "browser.wait", "browser.extract", "browser.dom_summary", "browser.screenshot"} {
+		t.Run(toolName, func(t *testing.T) {
+			state := InterpretToolCall(domain.ToolCall{Name: toolName, Status: domain.ToolCallStatusSucceeded}, tools.Result{
+				Success: true,
+				Output:  map[string]any{"url": "https://example.test", "dom_summary": "Example"},
+			})
+			if state.Status != StateObserved {
+				t.Fatalf("expected observed state, got %s", state.Status)
+			}
+			if state.Type != "state.browser_observed" {
+				t.Fatalf("expected browser observation, got %s", state.Type)
+			}
+		})
+	}
+}
+
 func TestInterpreterPersistsObservationAndEvent(t *testing.T) {
 	store := &recordingStore{}
 	interpreter := NewInterpreter(store)

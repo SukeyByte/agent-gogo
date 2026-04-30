@@ -188,18 +188,44 @@ func TestRuntimeBlocksShellWhenCommandNotAllowlisted(t *testing.T) {
 	}
 }
 
-func TestBuiltinRuntimeShellRunDoesNotInvokeShellExpansion(t *testing.T) {
+func TestRuntimeNormalizesTestRunPackagePatternBeforePolicy(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	execCommand(t, root, "go", "mod", "init", "smoke")
+	if err := os.WriteFile(filepath.Join(root, "smoke.go"), []byte("package smoke\n"), 0o644); err != nil {
+		t.Fatalf("write smoke file: %v", err)
+	}
+	runtime := NewBuiltinRuntime(nil, root)
+	runtime.UseSecurityPolicy(SecurityPolicy{AllowShell: true, ShellAllowlist: []string{"go test"}}, nil)
+
+	response, err := runtime.Call(ctx, CallRequest{
+		Name: "test.run",
+		Args: map[string]any{"command": "./..."},
+	})
+	if err != nil {
+		t.Fatalf("test.run: %v", err)
+	}
+	command, _ := response.Result.Output["command"].(string)
+	if command != "go test ./..." {
+		t.Fatalf("expected normalized command, got %q", command)
+	}
+}
+
+func TestBuiltinRuntimeShellRunRejectsShellExpansion(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	runtime := NewBuiltinRuntime(nil, root)
 	runtime.UseSecurityPolicy(SecurityPolicy{AllowShell: true, ShellAllowlist: []string{"echo"}}, nil)
 
-	_, err := runtime.Call(ctx, CallRequest{
+	response, err := runtime.Call(ctx, CallRequest{
 		Name: "shell.run",
 		Args: map[string]any{"command": "echo ok > marker.txt"},
 	})
-	if err != nil {
-		t.Fatalf("run echo: %v", err)
+	if err == nil {
+		t.Fatal("expected shell expansion error")
+	}
+	if !strings.Contains(response.ToolCall.Error, "unsupported shell token") {
+		t.Fatalf("expected unsupported shell token error, got %q", response.ToolCall.Error)
 	}
 	if _, err := os.Stat(filepath.Join(root, "marker.txt")); !os.IsNotExist(err) {
 		t.Fatalf("expected shell redirection not to create marker, stat err=%v", err)

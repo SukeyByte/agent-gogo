@@ -16,6 +16,7 @@ type LLMReviewStore interface {
 	CreateReviewResult(ctx context.Context, result domain.ReviewResult) (domain.ReviewResult, error)
 	CompleteTaskAttempt(ctx context.Context, attemptID string, status domain.AttemptStatus, message string) (domain.TaskAttempt, error)
 	ListObservationsByAttempt(ctx context.Context, attemptID string) ([]domain.Observation, error)
+	ListToolCallsByAttempt(ctx context.Context, attemptID string) ([]domain.ToolCall, error)
 }
 
 type LLMReviewer struct {
@@ -39,10 +40,15 @@ func (r *LLMReviewer) Review(ctx context.Context, task domain.Task, attempt doma
 	if err != nil {
 		return Result{}, err
 	}
+	toolCalls, err := r.store.ListToolCallsByAttempt(ctx, attempt.ID)
+	if err != nil {
+		return Result{}, err
+	}
 	payload := map[string]any{
 		"task":         task,
 		"observations": observations,
-		"instruction":  "Return JSON only: {\"approved\":true|false,\"summary\":\"...\"}. Approve only when the answer is grounded in observations and non-empty.",
+		"tool_calls":   toolCalls,
+		"instruction":  "Return JSON only: {\"approved\":true|false,\"summary\":\"...\"}. Approve when the task acceptance criteria are satisfied by observation summaries or payloads. Do not require a separate report/file/console output unless the task explicitly asks to create one.",
 	}
 	resp, err := r.llm.Chat(ctx, provider.ChatRequest{
 		Model: r.model,
@@ -108,6 +114,14 @@ type llmReviewDecision struct {
 const llmReviewerSystemPrompt = `You are agent-gogo's reviewer.
 Return JSON only with fields approved and summary.
 Reject empty, ungrounded, or unverifiable task outputs.
+Judge only the task's stated acceptance criteria. Do not invent extra requirements.
+Observation summaries and observation payloads are the task output evidence.
+Tool calls, including their input_json and output_json, are also task evidence.
+Approve if the acceptance criteria are satisfied anywhere in the observations, including tool output payloads and agent.finish summaries.
+For file.patch tasks, the old/new text in tool_calls.input_json is valid evidence of what changed.
+Do not require go build, go test, lint, or compile evidence unless the task acceptance criteria explicitly ask for that verification.
+Do not reject solely because earlier tool calls failed when later observations contain enough successful evidence.
+Do not require a separate structured report, document, or console output unless the task explicitly asks to create that artifact.
 For browser tasks, visible DOM text plus evidence URL is valid evidence; do not require raw HTML or HTTP status unless the user explicitly requested raw HTML or status codes.`
 
 func mustJSON(value any) string {

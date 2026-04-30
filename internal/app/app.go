@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/sukeke/agent-gogo/internal/browser"
 	"github.com/sukeke/agent-gogo/internal/communication"
@@ -138,7 +139,10 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 		AllowShell:                cfg.Security.AllowShell,
 		ShellAllowlist:            cfg.Security.ShellAllowlist,
 		RequireConfirmationAtRisk: confirmationRisk(cfg),
-	}, tools.AutoConfirmationGate{Approved: true})
+	}, newConfirmationGate(writer))
+	browserEngine := newLazyBrowserEngine(cfg)
+	defer browserEngine.Close()
+	toolRuntime.RegisterBrowserTools(browserEngine)
 
 	skillRegistry, err := skill.Discover(ctx, cfg.Storage.SkillRoots...)
 	if err != nil {
@@ -153,10 +157,7 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 	if err != nil {
 		return err
 	}
-	testRunner := tester.Tester(tester.NewMinimalTester(sqlite))
-	if cfg.Security.AllowShell {
-		testRunner = tester.NewCommandTester(sqlite, toolRuntime, cfg.Runtime.TestCommand)
-	}
+	testRunner := tester.Tester(tester.NewGenericEvidenceTester(sqlite))
 
 	service := appruntime.NewServiceWithComponents(
 		sqlite,
@@ -168,7 +169,7 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 			Tools:    toolRuntime,
 			LLM:      loggedLLM,
 			Model:    cfg.LLM.Model,
-			MaxSteps: 8,
+			MaxSteps: 12,
 		}),
 		testRunner,
 		reviewer.NewLLMReviewer(sqlite, loggedLLM, cfg.LLM.Model),
@@ -253,7 +254,7 @@ func RunStory(ctx context.Context, goal string, opts Options, writer io.Writer) 
 		AllowShell:                cfg.Security.AllowShell,
 		ShellAllowlist:            cfg.Security.ShellAllowlist,
 		RequireConfirmationAtRisk: confirmationRisk(cfg),
-	}, tools.AutoConfirmationGate{Approved: true})
+	}, newConfirmationGate(writer))
 
 	skillRegistry, err := skill.Discover(ctx, storySkillSources(cfg)...)
 	if err != nil {
@@ -355,7 +356,7 @@ func RunPersonalSite(ctx context.Context, name string, opts Options, writer io.W
 		AllowShell:                cfg.Security.AllowShell,
 		ShellAllowlist:            cfg.Security.ShellAllowlist,
 		RequireConfirmationAtRisk: confirmationRisk(cfg),
-	}, tools.AutoConfirmationGate{Approved: true})
+	}, newConfirmationGate(writer))
 	if err := logger.Log(ctx, "input", map[string]any{
 		"goal":         "为" + name + "写一个个人网页并完成部署",
 		"workspace":    cfg.Storage.WorkspacePath,
@@ -667,6 +668,105 @@ func newBrowserRuntime(ctx context.Context, cfg appconfig.Config) (*browser.Runt
 	default:
 		return nil, nil, fmt.Errorf("unsupported browser provider %q", cfg.Browser.Provider)
 	}
+}
+
+type lazyBrowserEngine struct {
+	cfg     appconfig.Config
+	mu      sync.Mutex
+	runtime *browser.Runtime
+	close   func() error
+}
+
+func newLazyBrowserEngine(cfg appconfig.Config) *lazyBrowserEngine {
+	return &lazyBrowserEngine{cfg: cfg}
+}
+
+func (e *lazyBrowserEngine) init(ctx context.Context) (*browser.Runtime, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.runtime != nil {
+		return e.runtime, nil
+	}
+	runtime, closeBrowser, err := newBrowserRuntime(ctx, e.cfg)
+	if err != nil {
+		return nil, err
+	}
+	e.runtime = runtime
+	e.close = closeBrowser
+	return runtime, nil
+}
+
+func (e *lazyBrowserEngine) Close() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.close == nil {
+		return nil
+	}
+	return e.close()
+}
+
+func (e *lazyBrowserEngine) Open(ctx context.Context, url string) (browser.Snapshot, error) {
+	runtime, err := e.init(ctx)
+	if err != nil {
+		return browser.Snapshot{}, err
+	}
+	return runtime.Open(ctx, url)
+}
+
+func (e *lazyBrowserEngine) Click(ctx context.Context, text string) (browser.Snapshot, error) {
+	runtime, err := e.init(ctx)
+	if err != nil {
+		return browser.Snapshot{}, err
+	}
+	return runtime.Click(ctx, text)
+}
+
+func (e *lazyBrowserEngine) TypeText(ctx context.Context, text string) (browser.Snapshot, error) {
+	runtime, err := e.init(ctx)
+	if err != nil {
+		return browser.Snapshot{}, err
+	}
+	return runtime.TypeText(ctx, text)
+}
+
+func (e *lazyBrowserEngine) Input(ctx context.Context, selector string, value string) (browser.Snapshot, error) {
+	runtime, err := e.init(ctx)
+	if err != nil {
+		return browser.Snapshot{}, err
+	}
+	return runtime.Input(ctx, selector, value)
+}
+
+func (e *lazyBrowserEngine) Wait(ctx context.Context, text string, timeoutMS int) (browser.Snapshot, error) {
+	runtime, err := e.init(ctx)
+	if err != nil {
+		return browser.Snapshot{}, err
+	}
+	return runtime.Wait(ctx, text, timeoutMS)
+}
+
+func (e *lazyBrowserEngine) Extract(ctx context.Context, query string) (browser.Snapshot, error) {
+	runtime, err := e.init(ctx)
+	if err != nil {
+		return browser.Snapshot{}, err
+	}
+	return runtime.Extract(ctx, query)
+}
+
+func (e *lazyBrowserEngine) DOMSummary(ctx context.Context) (browser.Snapshot, error) {
+	runtime, err := e.init(ctx)
+	if err != nil {
+		return browser.Snapshot{}, err
+	}
+	return runtime.DOMSummary(ctx)
+}
+
+func (e *lazyBrowserEngine) Screenshot(ctx context.Context) (browser.Snapshot, error) {
+	runtime, err := e.init(ctx)
+	if err != nil {
+		return browser.Snapshot{}, err
+	}
+	return runtime.Screenshot(ctx)
 }
 
 func openStore(ctx context.Context, cfg appconfig.Config) (*store.SQLiteStore, error) {
@@ -1025,6 +1125,10 @@ func confirmationRisk(cfg appconfig.Config) string {
 		return "high"
 	}
 	return ""
+}
+
+func newConfirmationGate(writer io.Writer) tools.ConfirmationGate {
+	return tools.NewCLIConfirmationGate(os.Stdin, writer)
 }
 
 func firstNonEmpty(values ...string) string {

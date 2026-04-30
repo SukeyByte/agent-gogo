@@ -67,7 +67,7 @@ func (e *ExecutionError) Unwrap() error {
 func NewGenericExecutor(options GenericExecutorOptions) *GenericExecutor {
 	maxSteps := options.MaxSteps
 	if maxSteps <= 0 {
-		maxSteps = 8
+		maxSteps = 12
 	}
 	interpreter := options.Observer
 	if interpreter == nil {
@@ -111,6 +111,9 @@ func (e *GenericExecutor) Execute(ctx context.Context, task domain.Task) (Result
 	}
 	events := []actionEvent{}
 	for step := 1; step <= e.maxSteps; step++ {
+		if summary, ok := autoFinishSummary(inProgress, events); ok {
+			return e.finishWithoutTools(ctx, inProgress, attempt, summary)
+		}
 		action, err := e.nextAction(ctx, inProgress, attempt, step, events)
 		if err != nil {
 			return e.fail(ctx, inProgress, attempt, err)
@@ -126,6 +129,16 @@ func (e *GenericExecutor) Execute(ctx context.Context, task domain.Task) (Result
 			}
 			if summary == "" {
 				summary = "generic action loop finished"
+			}
+			if ok, reason := finishEvidenceReady(inProgress, events); !ok {
+				events = append(events, actionEvent{
+					Step:    step,
+					Action:  "finish",
+					State:   "rejected",
+					Summary: summary,
+					Error:   reason,
+				})
+				continue
 			}
 			return e.finishWithoutTools(ctx, inProgress, attempt, summary)
 		case "ask_user":
@@ -156,21 +169,33 @@ func (e *GenericExecutor) Execute(ctx context.Context, task domain.Task) (Result
 				return Result{}, observeErr
 			}
 			events = append(events, actionEvent{
-				Step:    step,
-				Action:  action.Action,
-				Tool:    action.Tool,
-				Summary: state.Summary,
-				State:   string(state.Status),
-				Error:   state.FailureReason,
+				Step:        step,
+				Action:      action.Action,
+				Tool:        action.Tool,
+				Summary:     state.Summary,
+				State:       string(state.Status),
+				Error:       state.FailureReason,
+				EvidenceRef: state.EvidenceRef,
+				Output:      compactToolOutput(response.Result.Output),
 			})
 			if callErr != nil {
-				return e.fail(ctx, inProgress, attempt, callErr)
+				continue
+			}
+			if summary, ok := autoFinishSummary(inProgress, events); ok {
+				return e.finishWithoutTools(ctx, inProgress, attempt, summary)
 			}
 		default:
-			return e.fail(ctx, inProgress, attempt, fmt.Errorf("unsupported generic action %q", action.Action))
+			events = append(events, actionEvent{
+				Step:    step,
+				Action:  firstNonEmpty(action.Action, "unknown"),
+				State:   "rejected",
+				Summary: firstNonEmpty(action.Reason, action.Summary, "unsupported generic action"),
+				Error:   fmt.Sprintf("unsupported generic action %q", action.Action),
+			})
+			continue
 		}
 	}
-	return e.finishWithoutTools(ctx, inProgress, attempt, "generic executor reached max action steps")
+	return e.fail(ctx, inProgress, attempt, errors.New("generic executor reached max action steps without accepted finish"))
 }
 
 func (e *GenericExecutor) nextAction(ctx context.Context, task domain.Task, attempt domain.TaskAttempt, step int, events []actionEvent) (agentAction, error) {
@@ -215,7 +240,24 @@ func (e *GenericExecutor) nextAction(ctx context.Context, task domain.Task, atte
 	if action.Args == nil {
 		action.Args = map[string]any{}
 	}
+	if e.isAvailableTool(action.Action) {
+		action.Tool = action.Action
+		action.Action = "tool_call"
+	}
 	return action, nil
+}
+
+func (e *GenericExecutor) isAvailableTool(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || e.tools == nil {
+		return false
+	}
+	for _, spec := range e.tools.ListSpecs() {
+		if spec.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *GenericExecutor) recordAction(ctx context.Context, taskID string, attemptID string, step int, action agentAction) error {
@@ -275,12 +317,14 @@ type agentAction struct {
 }
 
 type actionEvent struct {
-	Step    int    `json:"step"`
-	Action  string `json:"action"`
-	Tool    string `json:"tool,omitempty"`
-	State   string `json:"state,omitempty"`
-	Summary string `json:"summary,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Step        int    `json:"step"`
+	Action      string `json:"action"`
+	Tool        string `json:"tool,omitempty"`
+	State       string `json:"state,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	Error       string `json:"error,omitempty"`
+	EvidenceRef string `json:"evidence_ref,omitempty"`
+	Output      string `json:"output,omitempty"`
 }
 
 func toolSchemas(specs []tools.Spec) []map[string]any {
@@ -307,6 +351,269 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func compactToolOutput(output map[string]any) string {
+	if len(output) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(output)
+	if err != nil {
+		return fmt.Sprint(output)
+	}
+	text := string(data)
+	const maxOutput = 2400
+	if len(text) <= maxOutput {
+		return text
+	}
+	return text[:maxOutput] + "...[truncated]"
+}
+
+func finishEvidenceReady(task domain.Task, events []actionEvent) (bool, string) {
+	hasSuccessfulToolEvidence := false
+	hasSourceRead := false
+	hasBrowserRead := false
+	hasTestRun := false
+	hasPassingTest := false
+	for _, event := range events {
+		switch event.State {
+		case "succeeded", "changed", "verified", "observed":
+			if event.Tool != "" {
+				hasSuccessfulToolEvidence = true
+			}
+		}
+		if event.Tool == "test.run" {
+			hasTestRun = true
+			if event.State == "verified" {
+				hasPassingTest = true
+			}
+			if event.State == "failed" && taskNeedsDiagnosticTestRun(task) {
+				hasSuccessfulToolEvidence = true
+			}
+		}
+		if event.Tool == "file.read" {
+			hasSourceRead = true
+		}
+		if strings.HasPrefix(event.Tool, "browser.") && event.State == "observed" {
+			hasBrowserRead = true
+		}
+	}
+	if !hasSuccessfulToolEvidence {
+		return false, "finish requires at least one successful interpreted tool result"
+	}
+	if taskNeedsPassingTest(task) && !hasPassingTest {
+		return false, "finish requires passing test.run evidence for this task"
+	}
+	if taskNeedsDiagnosticTestRun(task) && !hasTestRun {
+		return false, "finish requires test.run evidence for this task"
+	}
+	if taskNeedsBrowserRead(task) && !taskNeedsGeneratedText(task) && !hasBrowserRead {
+		return false, "finish requires browser evidence for this task"
+	}
+	if taskNeedsSourceRead(task) && !hasSourceRead {
+		return false, "finish requires file.read evidence for this task"
+	}
+	return true, ""
+}
+
+func autoFinishSummary(task domain.Task, events []actionEvent) (string, bool) {
+	if len(events) == 0 {
+		return "", false
+	}
+	hasSourceRead := false
+	hasBrowserRead := false
+	for _, event := range events {
+		if event.Tool == "file.read" && event.State == "succeeded" {
+			hasSourceRead = true
+		}
+		if strings.HasPrefix(event.Tool, "browser.") && event.State == "observed" {
+			hasBrowserRead = true
+		}
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if taskNeedsBrowserRead(task) && !taskNeedsGeneratedText(task) && hasBrowserRead && strings.HasPrefix(event.Tool, "browser.") && event.State == "observed" {
+			return "browser evidence captured for this web-reading task: " + firstNonEmpty(event.Summary, event.Output), true
+		}
+		if taskNeedsGeneratedText(task) && (event.Tool == "file.write" || event.Tool == "document.write" || event.Tool == "artifact.write") && event.State == "changed" {
+			return "generated text written for this task: " + firstNonEmpty(event.Summary, event.Output), true
+		}
+		if taskNeedsCodeChange(task) && !taskNeedsPassingTest(task) && (event.Tool == "file.patch" || event.Tool == "file.write") && event.State == "changed" {
+			return "workspace file changed and satisfies this code-change task: " + firstNonEmpty(event.Summary, event.Output), true
+		}
+		if event.Tool != "test.run" {
+			continue
+		}
+		if taskNeedsPassingTest(task) && event.State == "verified" {
+			return "test.run passed and satisfies this verification task", true
+		}
+		if taskNeedsDiagnosticTestRun(task) && (!taskNeedsSourceRead(task) || hasSourceRead) {
+			return "test.run output captured for diagnostic task: " + firstNonEmpty(event.Summary, event.Output), true
+		}
+	}
+	return "", false
+}
+
+func taskNeedsPassingTest(task domain.Task) bool {
+	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
+	if strings.Contains(text, "go test") && (strings.Contains(text, "pass") || strings.Contains(text, "ok") || strings.Contains(text, "通过") || strings.Contains(text, "退出码0") || strings.Contains(text, "status 0")) {
+		return true
+	}
+	for _, marker := range []string{
+		"tests pass",
+		"tests passed",
+		"all tests pass",
+		"all tests passed",
+		"test passed",
+		"passing tests",
+		"go test ./... returns ok",
+		"returns ok",
+		"no fail",
+		"验证所有测试",
+		"驗證所有測試",
+		"所有测试通过",
+		"所有測試通過",
+		"验证修改成功",
+		"確認所有測試",
+		"确认所有测试",
+		"均通过",
+		"全部通过",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func taskNeedsDiagnosticTestRun(task domain.Task) bool {
+	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
+	if taskNeedsPassingTest(task) {
+		return false
+	}
+	for _, marker := range []string{
+		"go test",
+		"run tests",
+		"test output",
+		"failing test",
+		"failure output",
+		"运行失败测试",
+		"获取失败",
+		"捕获失败",
+		"失败输出",
+		"执行 go test",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	for _, field := range strings.FieldsFunc(text, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z')
+	}) {
+		if field == "tests" || field == "testing" {
+			return true
+		}
+	}
+	return false
+}
+
+func taskNeedsSourceRead(task domain.Task) bool {
+	if taskNeedsBrowserRead(task) {
+		return false
+	}
+	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
+	for _, marker := range []string{
+		"source file",
+		"source files",
+		"implementation file",
+		"failing function",
+		"relevant source",
+		"read relevant",
+		"源文件",
+		"实现文件",
+		"實現文件",
+		"读取",
+		"閱讀",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func taskNeedsBrowserRead(task domain.Task) bool {
+	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
+	for _, marker := range []string{
+		"http://",
+		"https://",
+		"url",
+		"web page",
+		"webpage",
+		"browser",
+		"visible text",
+		"dom",
+		"网页",
+		"網頁",
+		"页面",
+		"頁面",
+		"浏览器",
+		"瀏覽器",
+		"可见文本",
+		"可見文本",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func taskNeedsGeneratedText(task domain.Task) bool {
+	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
+	for _, marker := range []string{
+		"summarize",
+		"summary",
+		"write a summary",
+		"draft",
+		"compose",
+		"总结",
+		"總結",
+		"概括",
+		"撰写",
+		"撰寫",
+		"编写",
+		"編寫",
+		"用中文",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func taskNeedsCodeChange(task domain.Task) bool {
+	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
+	for _, marker := range []string{
+		"modify",
+		"patch",
+		"fix failing",
+		"code change",
+		"minimal code",
+		"apply minimal",
+		"修改代码",
+		"修改源代码",
+		"应用",
+		"修复",
+		"最小修改",
+		"最小化",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 const genericExecutorPrompt = `You are the GenericExecutor for agent-gogo.
 Choose exactly one next action and return only JSON.
 Allowed JSON shapes:
@@ -316,6 +623,17 @@ Allowed JSON shapes:
 Rules:
 - Use only tools listed in available_tools.
 - Prefer small reversible tool calls.
+- Prefer code.index or code.search to discover repository structure.
+- Prefer file.read to inspect file contents.
+- Prefer file.patch for small source edits.
+- Prefer test.run, not shell.run, when validating tests.
+- shell.run is exec-style, not a real shell: do not use pipes, redirects, semicolons, glob wildcards, command substitution, environment assignments, or chained commands.
+- Treat prior_events.output as the concrete result of previous tool calls; do not repeat a discovery/read command when prior_events already contains the needed files, content, or test output.
+- If the task asks for a summary, draft, explanation, or other generated text, put the actual generated text in finish.summary after grounding it in prior tool output.
 - Continue calling tools until task acceptance criteria have concrete evidence.
 - Finish only when the task is implemented and enough evidence exists for tester/reviewer.
+- Do not ask the user whether to continue to a later planned task; finish the current task when its acceptance criteria are met and the runtime scheduler will run the next task.
+- Do not ask the user for permission to read, patch, or test workspace files; tool runtime handles policy and confirmation.
+- Do not ask the user to inspect a file you wrote; use file.read when inspection is necessary.
+- Use ask_user only when required information is absent from the workspace/tools or when the task cannot continue without external human input.
 - Do not include markdown or prose outside JSON.`

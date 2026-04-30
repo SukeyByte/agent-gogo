@@ -24,6 +24,31 @@ func TestRuntimeCapturesBrowserEvidence(t *testing.T) {
 	}
 }
 
+func TestRuntimeSupportsInteractiveBrowserActions(t *testing.T) {
+	runtime := NewRuntime(testBrowserProvider{})
+	cases := []struct {
+		name string
+		run  func(context.Context) (Snapshot, error)
+		want string
+	}{
+		{name: "type", run: func(ctx context.Context) (Snapshot, error) { return runtime.TypeText(ctx, "hello") }, want: "browser.type"},
+		{name: "input", run: func(ctx context.Context) (Snapshot, error) { return runtime.Input(ctx, "#q", "hello") }, want: "browser.input"},
+		{name: "wait", run: func(ctx context.Context) (Snapshot, error) { return runtime.Wait(ctx, "Example", 100) }, want: "browser.wait"},
+		{name: "extract", run: func(ctx context.Context) (Snapshot, error) { return runtime.Extract(ctx, "main") }, want: "browser.extract"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot, err := tc.run(context.Background())
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if snapshot.Observation.Type != tc.want {
+				t.Fatalf("expected %s, got %s", tc.want, snapshot.Observation.Type)
+			}
+		})
+	}
+}
+
 type testBrowserProvider struct{}
 
 func (p testBrowserProvider) Call(ctx context.Context, action string, args map[string]any) (provider.BrowserProviderResult, error) {

@@ -103,7 +103,7 @@ func decodeDecisionJSONObject(text string) (Decision, error) {
 		PersonaIDs  any    `json:"persona_ids"`
 		SkillTags   any    `json:"skill_tags"`
 		ToolNames   any    `json:"tool_names"`
-		RiskLevel   string `json:"risk_level"`
+		RiskLevel   any    `json:"risk_level"`
 	}
 	if err := decodeJSONObject(text, &wire); err != nil {
 		return Decision{}, err
@@ -125,7 +125,7 @@ func decodeDecisionJSONObject(text string) (Decision, error) {
 		PersonaIDs:  stringList(wire.PersonaIDs),
 		SkillTags:   stringList(wire.SkillTags),
 		ToolNames:   toolNames,
-		RiskLevel:   wire.RiskLevel,
+		RiskLevel:   riskLevelValue(wire.RiskLevel),
 	}, nil
 }
 
@@ -173,8 +173,34 @@ func stringList(value any) []string {
 	}
 }
 
+func riskLevelValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case float64:
+		switch {
+		case typed <= 1:
+			return "low"
+		case typed <= 2:
+			return "medium"
+		case typed <= 3:
+			return "high"
+		default:
+			return "critical"
+		}
+	case bool:
+		if typed {
+			return "medium"
+		}
+		return "low"
+	default:
+		return ""
+	}
+}
+
 const routeSystemPrompt = `You are the Chain Router for agent-gogo.
 Return only one JSON object with:
 level, reason, need_plan, need_tools, need_memory, need_review, need_browser, need_code, need_docs, persona_ids, skill_tags, tool_names, risk_level.
+risk_level must be one of low, medium, high, critical.
 Use level L0 for direct answers, L1 for assisted single-step tasks, L2 for planned tasks, L3 for project agent tasks.
 Do not include markdown.`
