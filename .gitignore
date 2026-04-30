@@ -3,13 +3,11 @@
 .env.*
 !.env.example
 config.yaml
+configs/config.yaml
 
 # Runtime data
 data/
 artifacts/
-docs/results/*
-!docs/results/m10_2_*.md
-!docs/results/m10_4_webconsole_channel_result.md
 *.db
 *.db-shm
 *.db-wal
@@ -19,7 +17,8 @@ docs/results/*
 /dist/
 *.test
 *.out
-coverage.*
+coverage.out
+coverage.html
 
 # Frontend
 node_modules/
@@ -32,4 +31,17 @@ web/.vite/
 .idea/
 .vscode/
 *.swp
+*.swo
+*~
+
+# Logs
 logs/
+docs/results/
+
+# Archives
+*.tar.gz
+*.zip
+
+# Claude Code plans (local only)
+.claude/plans/
+.claude/memory/
