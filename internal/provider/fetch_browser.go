@@ -132,7 +132,7 @@ func (p *FetchBrowserProvider) open(ctx context.Context, url string) (BrowserPro
 	if err != nil {
 		return BrowserProviderResult{}, err
 	}
-	req.Header.Set("User-Agent", "agent-gogo/0.1 (+https://github.com/sukeke/agent-gogo)")
+	req.Header.Set("User-Agent", "agent-gogo/0.1 (+https://github.com/SukeyByte/agent-gogo)")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7")
 	resp, err := p.client.Do(req)
 	if err != nil {

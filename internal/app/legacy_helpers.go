@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"strings"
 
-	appconfig "github.com/sukeke/agent-gogo/internal/config"
-	"github.com/sukeke/agent-gogo/internal/contextbuilder"
-	"github.com/sukeke/agent-gogo/internal/domain"
-	"github.com/sukeke/agent-gogo/internal/observability"
-	"github.com/sukeke/agent-gogo/internal/provider"
-	"github.com/sukeke/agent-gogo/internal/store"
+	appconfig "github.com/SukeyByte/agent-gogo/internal/config"
+	"github.com/SukeyByte/agent-gogo/internal/contextbuilder"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/observability"
+	"github.com/SukeyByte/agent-gogo/internal/provider"
+	"github.com/SukeyByte/agent-gogo/internal/store"
 )
 
 func extractPersonalSiteName(goal string) string {

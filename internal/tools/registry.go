@@ -3,8 +3,8 @@ package tools
 import (
 	"sort"
 
-	"github.com/sukeke/agent-gogo/internal/capability"
-	"github.com/sukeke/agent-gogo/internal/observability"
+	"github.com/SukeyByte/agent-gogo/internal/capability"
+	"github.com/SukeyByte/agent-gogo/internal/observability"
 )
 
 func NewRuntime(store Store) *Runtime {

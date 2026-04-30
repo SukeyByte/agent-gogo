@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sukeke/agent-gogo/internal/browser"
+	"github.com/SukeyByte/agent-gogo/internal/browser"
 )
 
 func TestRuntimeRegistersBrowserTools(t *testing.T) {

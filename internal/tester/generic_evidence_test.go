@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sukeke/agent-gogo/internal/domain"
-	"github.com/sukeke/agent-gogo/internal/store"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/store"
 )
 
 func TestGenericEvidenceTesterRequiresStateEvidence(t *testing.T) {

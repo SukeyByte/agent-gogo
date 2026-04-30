@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sukeke/agent-gogo/internal/contextbuilder"
+	"github.com/SukeyByte/agent-gogo/internal/contextbuilder"
 )
 
 var ErrPersonaNotFound = errors.New("persona not found")

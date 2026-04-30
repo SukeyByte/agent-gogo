@@ -4,9 +4,9 @@ import (
 	"context"
 	"strings"
 
-	"github.com/sukeke/agent-gogo/internal/chain"
-	"github.com/sukeke/agent-gogo/internal/domain"
-	"github.com/sukeke/agent-gogo/internal/intent"
+	"github.com/SukeyByte/agent-gogo/internal/chain"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/intent"
 )
 
 type PlanRequest struct {

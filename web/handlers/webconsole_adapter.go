@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/sukeke/agent-gogo/internal/communication"
+	"github.com/SukeyByte/agent-gogo/internal/communication"
 )
 
 type WebConsoleAdapter struct {

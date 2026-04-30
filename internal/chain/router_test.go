@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sukeke/agent-gogo/internal/provider"
+	"github.com/SukeyByte/agent-gogo/internal/provider"
 )
 
 func TestLLMRouterUsesProviderJSON(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sukeke/agent-gogo/internal/capability"
-	"github.com/sukeke/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/capability"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
 )
 
 func TestCapabilityTaskValidatorBlocksUnavailableCapability(t *testing.T) {

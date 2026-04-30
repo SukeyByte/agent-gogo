@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sukeke/agent-gogo/internal/domain"
-	"github.com/sukeke/agent-gogo/internal/tools"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/tools"
 )
 
 type StateStatus string

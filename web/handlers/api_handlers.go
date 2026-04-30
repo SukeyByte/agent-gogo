@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sukeke/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
 )
 
 // --- JSON DTOs ---

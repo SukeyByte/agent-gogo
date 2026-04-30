@@ -1,4 +1,4 @@
-module github.com/sukeke/agent-gogo
+module github.com/SukeyByte/agent-gogo
 
 go 1.25.0
 

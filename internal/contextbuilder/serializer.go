@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sukeke/agent-gogo/internal/textutil"
+	"github.com/SukeyByte/agent-gogo/internal/textutil"
 )
 
 const (

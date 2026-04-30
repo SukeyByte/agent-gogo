@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sukeke/agent-gogo/internal/chain"
-	"github.com/sukeke/agent-gogo/internal/contextbuilder"
-	"github.com/sukeke/agent-gogo/internal/llmjson"
-	"github.com/sukeke/agent-gogo/internal/prompts"
-	"github.com/sukeke/agent-gogo/internal/provider"
-	"github.com/sukeke/agent-gogo/internal/textutil"
+	"github.com/SukeyByte/agent-gogo/internal/chain"
+	"github.com/SukeyByte/agent-gogo/internal/contextbuilder"
+	"github.com/SukeyByte/agent-gogo/internal/llmjson"
+	"github.com/SukeyByte/agent-gogo/internal/prompts"
+	"github.com/SukeyByte/agent-gogo/internal/provider"
+	"github.com/SukeyByte/agent-gogo/internal/textutil"
 )
 
 type Profile struct {

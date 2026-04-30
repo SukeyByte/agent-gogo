@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sukeke/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
 )
 
 type GenericEvidenceStore interface {

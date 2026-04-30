@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sukeke/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
 )
 
 func (s *APIServer) handleSessionAction(w http.ResponseWriter, r *http.Request) {

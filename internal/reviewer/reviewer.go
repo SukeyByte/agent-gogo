@@ -3,7 +3,7 @@ package reviewer
 import (
 	"context"
 
-	"github.com/sukeke/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
 )
 
 type Store interface {

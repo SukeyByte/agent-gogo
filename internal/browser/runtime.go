@@ -3,8 +3,8 @@ package browser
 import (
 	"context"
 
-	"github.com/sukeke/agent-gogo/internal/domain"
-	"github.com/sukeke/agent-gogo/internal/provider"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/provider"
 )
 
 type Runtime struct {

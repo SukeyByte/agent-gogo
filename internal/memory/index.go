@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sukeke/agent-gogo/internal/contextbuilder"
-	"github.com/sukeke/agent-gogo/internal/textutil"
+	"github.com/SukeyByte/agent-gogo/internal/contextbuilder"
+	"github.com/SukeyByte/agent-gogo/internal/textutil"
 )
 
 var ErrMemoryNotFound = errors.New("memory not found")

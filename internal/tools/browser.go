@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/sukeke/agent-gogo/internal/browser"
+	"github.com/SukeyByte/agent-gogo/internal/browser"
 )
 
 type BrowserEngine interface {

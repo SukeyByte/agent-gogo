@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sukeke/agent-gogo/internal/domain"
-	"github.com/sukeke/agent-gogo/internal/llmjson"
-	"github.com/sukeke/agent-gogo/internal/observer"
-	"github.com/sukeke/agent-gogo/internal/prompts"
-	"github.com/sukeke/agent-gogo/internal/provider"
-	"github.com/sukeke/agent-gogo/internal/tools"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/llmjson"
+	"github.com/SukeyByte/agent-gogo/internal/observer"
+	"github.com/SukeyByte/agent-gogo/internal/prompts"
+	"github.com/SukeyByte/agent-gogo/internal/provider"
+	"github.com/SukeyByte/agent-gogo/internal/tools"
 )
 
 type GenericStore interface {

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/sukeke/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
 )
 
 type EvidenceReviewStore interface {

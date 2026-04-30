@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sukeke/agent-gogo/internal/provider/chromemcpbridge"
+	"github.com/SukeyByte/agent-gogo/internal/provider/chromemcpbridge"
 )
 
 type ChromeMCPBrowserProviderConfig struct {

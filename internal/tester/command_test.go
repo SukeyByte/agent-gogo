@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/sukeke/agent-gogo/internal/domain"
-	"github.com/sukeke/agent-gogo/internal/store"
-	"github.com/sukeke/agent-gogo/internal/tools"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/store"
+	"github.com/SukeyByte/agent-gogo/internal/tools"
 )
 
 func TestCommandTesterFailsFromRealToolResult(t *testing.T) {

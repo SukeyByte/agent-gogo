@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sukeke/agent-gogo/internal/browser"
-	"github.com/sukeke/agent-gogo/internal/domain"
-	coreexecutor "github.com/sukeke/agent-gogo/internal/executor"
-	"github.com/sukeke/agent-gogo/internal/provider"
+	"github.com/SukeyByte/agent-gogo/internal/browser"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
+	coreexecutor "github.com/SukeyByte/agent-gogo/internal/executor"
+	"github.com/SukeyByte/agent-gogo/internal/provider"
 )
 
 type Store interface {

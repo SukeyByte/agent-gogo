@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sukeke/agent-gogo/internal/codeindex"
+	"github.com/SukeyByte/agent-gogo/internal/codeindex"
 )
 
 func searchCode(ctx context.Context, root string, args map[string]any) (map[string]any, error) {

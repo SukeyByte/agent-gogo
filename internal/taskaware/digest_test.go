@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sukeke/agent-gogo/internal/domain"
-	"github.com/sukeke/agent-gogo/internal/store"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/store"
 )
 
 func TestBuildContextSnapshotCarriesProjectAndTaskAwareness(t *testing.T) {

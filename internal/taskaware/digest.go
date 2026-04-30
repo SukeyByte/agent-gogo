@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sukeke/agent-gogo/internal/contextbuilder"
-	"github.com/sukeke/agent-gogo/internal/domain"
-	"github.com/sukeke/agent-gogo/internal/memory"
-	"github.com/sukeke/agent-gogo/internal/textutil"
+	"github.com/SukeyByte/agent-gogo/internal/contextbuilder"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/memory"
+	"github.com/SukeyByte/agent-gogo/internal/textutil"
 )
 
 const (

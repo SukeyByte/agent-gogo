@@ -10,12 +10,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sukeke/agent-gogo/internal/browser"
-	"github.com/sukeke/agent-gogo/internal/communication"
-	appconfig "github.com/sukeke/agent-gogo/internal/config"
-	"github.com/sukeke/agent-gogo/internal/provider"
-	"github.com/sukeke/agent-gogo/internal/store"
-	"github.com/sukeke/agent-gogo/internal/tools"
+	"github.com/SukeyByte/agent-gogo/internal/browser"
+	"github.com/SukeyByte/agent-gogo/internal/communication"
+	appconfig "github.com/SukeyByte/agent-gogo/internal/config"
+	"github.com/SukeyByte/agent-gogo/internal/provider"
+	"github.com/SukeyByte/agent-gogo/internal/store"
+	"github.com/SukeyByte/agent-gogo/internal/tools"
 )
 
 func newLLMProvider(cfg appconfig.Config) (provider.LLMProvider, error) {

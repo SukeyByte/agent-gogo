@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/sukeke/agent-gogo/internal/provider"
+	"github.com/SukeyByte/agent-gogo/internal/provider"
 )
 
 func TestChatObjectRequestsJSONSchemaAndRepairsInvalidOutput(t *testing.T) {

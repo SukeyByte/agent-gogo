@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sukeke/agent-gogo/internal/codeindex"
+	"github.com/SukeyByte/agent-gogo/internal/codeindex"
 )
 
 type codeIndexCache struct {

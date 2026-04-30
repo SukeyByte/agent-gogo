@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/sukeke/agent-gogo/internal/browser"
-	"github.com/sukeke/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/browser"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
 )
 
 type BrowserActionStore interface {

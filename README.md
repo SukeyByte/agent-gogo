@@ -1,7 +1,7 @@
 # agent-gogo
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/sukeke/agent-gogo.svg)](https://pkg.go.dev/github.com/sukeke/agent-gogo)
-[![Go Report Card](https://goreportcard.com/badgeadge/github.com/sukeke/agent-gogo)](https://goreportcard.com/report/github.com/sukeke/agent-gogo)
+[![Go Reference](https://pkg.go.dev/badge/github.com/SukeyByte/agent-gogo.svg)](https://pkg.go.dev/github.com/SukeyByte/agent-gogo)
+[![Go Report Card](https://goreportcard.com/badge/github.com/SukeyByte/agent-gogo)](https://goreportcard.com/report/github.com/SukeyByte/agent-gogo)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.25-blue.svg)](go.mod)
 
@@ -39,7 +39,7 @@ The runtime treats tasks as **durable state**, not as temporary chat messages. T
 
 ```bash
 # Clone
-git clone https://github.com/sukeke/agent-gogo.git
+git clone https://github.com/SukeyByte/agent-gogo.git
 cd agent-gogo
 
 # Configure

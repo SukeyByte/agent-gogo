@@ -10,7 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/sukeke/agent-gogo/internal/provider/chromemcpbridge"
+	"github.com/SukeyByte/agent-gogo/internal/provider/chromemcpbridge"
 )
 
 func main() {

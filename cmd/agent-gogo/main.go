@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/sukeke/agent-gogo/internal/app"
+	"github.com/SukeyByte/agent-gogo/internal/app"
 )
 
 func main() {

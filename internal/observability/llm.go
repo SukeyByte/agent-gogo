@@ -3,7 +3,7 @@ package observability
 import (
 	"context"
 
-	"github.com/sukeke/agent-gogo/internal/provider"
+	"github.com/SukeyByte/agent-gogo/internal/provider"
 )
 
 type LoggingLLMProvider struct {

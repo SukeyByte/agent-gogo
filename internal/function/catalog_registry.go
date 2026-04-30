@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sukeke/agent-gogo/internal/textutil"
+	"github.com/SukeyByte/agent-gogo/internal/textutil"
 )
 
 var ErrNotFound = errors.New("function schema not found")

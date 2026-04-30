@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sukeke/agent-gogo/internal/memory"
-	"github.com/sukeke/agent-gogo/internal/persona"
-	"github.com/sukeke/agent-gogo/internal/skill"
+	"github.com/SukeyByte/agent-gogo/internal/memory"
+	"github.com/SukeyByte/agent-gogo/internal/persona"
+	"github.com/SukeyByte/agent-gogo/internal/skill"
 )
 
 type jsonSkill struct {

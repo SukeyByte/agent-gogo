@@ -6,17 +6,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sukeke/agent-gogo/internal/communication"
-	"github.com/sukeke/agent-gogo/internal/contextbuilder"
-	"github.com/sukeke/agent-gogo/internal/domain"
-	"github.com/sukeke/agent-gogo/internal/executor"
-	"github.com/sukeke/agent-gogo/internal/memory"
-	"github.com/sukeke/agent-gogo/internal/planner"
-	"github.com/sukeke/agent-gogo/internal/reviewer"
-	"github.com/sukeke/agent-gogo/internal/scheduler"
-	"github.com/sukeke/agent-gogo/internal/store"
-	"github.com/sukeke/agent-gogo/internal/tester"
-	"github.com/sukeke/agent-gogo/internal/validator"
+	"github.com/SukeyByte/agent-gogo/internal/communication"
+	"github.com/SukeyByte/agent-gogo/internal/contextbuilder"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/executor"
+	"github.com/SukeyByte/agent-gogo/internal/memory"
+	"github.com/SukeyByte/agent-gogo/internal/planner"
+	"github.com/SukeyByte/agent-gogo/internal/reviewer"
+	"github.com/SukeyByte/agent-gogo/internal/scheduler"
+	"github.com/SukeyByte/agent-gogo/internal/store"
+	"github.com/SukeyByte/agent-gogo/internal/tester"
+	"github.com/SukeyByte/agent-gogo/internal/validator"
 )
 
 func TestServiceRunsMinimalRuntimeLoop(t *testing.T) {

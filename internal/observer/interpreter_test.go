@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sukeke/agent-gogo/internal/domain"
-	"github.com/sukeke/agent-gogo/internal/tools"
+	"github.com/SukeyByte/agent-gogo/internal/domain"
+	"github.com/SukeyByte/agent-gogo/internal/tools"
 )
 
 func TestInterpretToolCallClassifiesFileWrite(t *testing.T) {
