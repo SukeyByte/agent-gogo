@@ -8,6 +8,7 @@ const router = createRouter({
     { path: '/projects', name: 'projects', component: () => import('../views/ProjectsView.vue') },
     { path: '/projects/:id', name: 'project-detail', component: () => import('../views/ProjectDetailView.vue') },
     { path: '/tasks/:id', name: 'task-detail', component: () => import('../views/TaskDetailView.vue') },
+    { path: '/sessions', name: 'sessions', component: () => import('../views/SessionsView.vue') },
     { path: '/browser', name: 'browser', component: () => import('../views/BrowserView.vue') },
     { path: '/skills', name: 'skills', component: () => import('../views/SkillsView.vue') },
     { path: '/personas', name: 'personas', component: () => import('../views/PersonasView.vue') },

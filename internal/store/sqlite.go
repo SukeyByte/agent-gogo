@@ -911,6 +911,18 @@ func (s *SQLiteStore) TouchSession(ctx context.Context, id string) error {
 	return err
 }
 
+func (s *SQLiteStore) ListSessions(ctx context.Context) ([]domain.Session, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, user_id, channel_type, channel_id, project_id, status, title, metadata, last_active_at, created_at, updated_at
+		FROM sessions ORDER BY last_active_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanSessions(rows)
+}
+
 func (s *SQLiteStore) ListSessionsByUser(ctx context.Context, userID string, status domain.SessionStatus) ([]domain.Session, error) {
 	var rows *sql.Rows
 	var err error

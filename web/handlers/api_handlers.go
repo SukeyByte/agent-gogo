@@ -99,6 +99,29 @@ type jsonStats struct {
 	FailedCount  int `json:"failed_count"`
 }
 
+type jsonSession struct {
+	ID           string `json:"id"`
+	UserID       string `json:"user_id"`
+	ChannelType  string `json:"channel_type"`
+	ChannelID    string `json:"channel_id"`
+	ProjectID    string `json:"project_id"`
+	Status       string `json:"status"`
+	Title        string `json:"title"`
+	LastActiveAt string `json:"last_active_at"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+}
+
+type jsonSessionContext struct {
+	SessionID      string `json:"session_id"`
+	ProjectID      string `json:"project_id"`
+	ChainDecision  string `json:"chain_decision"`
+	IntentProfile  string `json:"intent_profile"`
+	ContextText    string `json:"context_text"`
+	MemorySnapshot string `json:"memory_snapshot"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
 // --- Mappers ---
 
 func formatTime(t time.Time) string {
@@ -314,6 +337,70 @@ func (s *APIServer) handleStats(w http.ResponseWriter, r *http.Request) {
 
 func (s *APIServer) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.config)
+}
+
+// --- Session Handlers ---
+
+func sessionToJSON(sess domain.Session) jsonSession {
+	return jsonSession{
+		ID: sess.ID, UserID: sess.UserID, ChannelType: sess.ChannelType, ChannelID: sess.ChannelID,
+		ProjectID: sess.ProjectID, Status: string(sess.Status), Title: sess.Title,
+		LastActiveAt: formatTime(sess.LastActiveAt), CreatedAt: formatTime(sess.CreatedAt), UpdatedAt: formatTime(sess.UpdatedAt),
+	}
+}
+
+func (s *APIServer) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	if s.sessions == nil {
+		writeJSON(w, []jsonSession{})
+		return
+	}
+	sessions, err := s.sessions.ListSessions(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]jsonSession, len(sessions))
+	for i, sess := range sessions {
+		out[i] = sessionToJSON(sess)
+	}
+	writeJSON(w, out)
+}
+
+func (s *APIServer) handleGetSession(w http.ResponseWriter, r *http.Request) {
+	if s.sessions == nil {
+		writeJSONError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	id := extractID(r.URL.Path, "/api/sessions/")
+	sess, err := s.sessions.GetSession(r.Context(), id)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	writeJSON(w, sessionToJSON(sess))
+}
+
+func (s *APIServer) handleGetSessionContext(w http.ResponseWriter, r *http.Request) {
+	if s.sessions == nil {
+		writeJSONError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	path := strings.TrimSuffix(r.URL.Path, "/context")
+	id := extractID(path, "/api/sessions/")
+	sctx, err := s.sessions.GetSessionRuntimeContext(r.Context(), id)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "session context not found")
+		return
+	}
+	writeJSON(w, jsonSessionContext{
+		SessionID:      sctx.SessionID,
+		ProjectID:      sctx.ProjectID,
+		ChainDecision:  sctx.ChainDecision,
+		IntentProfile:  sctx.IntentProfile,
+		ContextText:    sctx.ContextText,
+		MemorySnapshot: sctx.MemorySnapshot,
+		UpdatedAt:      formatTime(sctx.UpdatedAt),
+	})
 }
 
 func (s *APIServer) handleSSE(w http.ResponseWriter, r *http.Request) {

@@ -259,3 +259,28 @@ export interface FileEntry {
   size: number
   modified: string
 }
+
+export type SessionStatus = 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'EXPIRED'
+
+export interface Session {
+  id: string
+  user_id: string
+  channel_type: string
+  channel_id: string
+  project_id: string
+  status: SessionStatus
+  title: string
+  last_active_at: string
+  created_at: string
+  updated_at: string
+}
+
+export interface SessionContext {
+  session_id: string
+  project_id: string
+  chain_decision: string
+  intent_profile: string
+  context_text: string
+  memory_snapshot: string
+  updated_at: string
+}

@@ -1,14 +1,24 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sukeke/agent-gogo/internal/domain"
 )
+
+type SessionStore interface {
+	ListSessions(ctx context.Context) ([]domain.Session, error)
+	GetSession(ctx context.Context, id string) (domain.Session, error)
+	GetSessionRuntimeContext(ctx context.Context, sessionID string) (domain.SessionRuntimeContext, error)
+}
 
 type APIServer struct {
 	store     Store
+	sessions  SessionStore
 	sender    ChannelEventSender
 	hub       *SSEHub
 	config    ConfigView
@@ -20,6 +30,7 @@ type APIServer struct {
 func NewAPIServer(store Store, sender ChannelEventSender, hub *SSEHub, config ConfigView, channelID, sessionID, distDir string) *APIServer {
 	return &APIServer{
 		store:     store,
+		sessions:  nil, // set via UseSessionStore after creation
 		sender:    sender,
 		hub:       hub,
 		config:    config,
@@ -27,6 +38,10 @@ func NewAPIServer(store Store, sender ChannelEventSender, hub *SSEHub, config Co
 		sessionID: sessionID,
 		distDir:   distDir,
 	}
+}
+
+func (s *APIServer) UseSessionStore(sessions SessionStore) {
+	s.sessions = sessions
 }
 
 func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -38,6 +53,8 @@ func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux.HandleFunc("/api/projects", s.handleListProjects)
 	mux.HandleFunc("/api/tasks/", s.apiTaskRoutes)
 	mux.HandleFunc("/api/attempts/", s.apiAttemptRoutes)
+	mux.HandleFunc("/api/sessions/", s.apiSessionRoutes)
+	mux.HandleFunc("/api/sessions", s.handleListSessions)
 	mux.HandleFunc("/api/message", s.handlePostMessage)
 	mux.HandleFunc("/api/confirmation", s.handlePostConfirmation)
 	mux.HandleFunc("/api/config", s.handleGetConfig)
@@ -89,6 +106,15 @@ func (s *APIServer) apiAttemptRoutes(w http.ResponseWriter, r *http.Request) {
 		s.handleListObservations(w, r)
 	} else {
 		http.NotFound(w, r)
+	}
+}
+
+func (s *APIServer) apiSessionRoutes(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	if strings.HasSuffix(path, "/context") {
+		s.handleGetSessionContext(w, r)
+	} else {
+		s.handleGetSession(w, r)
 	}
 }
 

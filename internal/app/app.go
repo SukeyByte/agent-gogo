@@ -126,6 +126,7 @@ func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Wri
 		ChannelID:     channelID,
 		SessionID:     sessionID,
 	}, channelID, sessionID, distDir)
+	apiServer.UseSessionStore(sqlite)
 
 	mode := "read-only"
 	if sender != nil {

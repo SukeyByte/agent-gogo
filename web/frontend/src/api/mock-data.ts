@@ -2,7 +2,7 @@ import type {
   Project, Task, TaskAttempt, TaskEvent, ToolCall, Observation,
   TestResult, ReviewResult, Artifact, ChatMessage, SkillCard,
   PersonaCard, MemoryItem, ChannelInfo, AppConfig, DashboardStats,
-  ProviderStatus, ChainDecision, FileEntry
+  ProviderStatus, ChainDecision, FileEntry, Session
 } from './types'
 
 const now = new Date().toISOString()
@@ -267,4 +267,12 @@ export const mockFiles: FileEntry[] = [
   { name: 'project-memory.md', path: 'data/artifacts/memory/project-memory.md', type: 'file', size: 4500, modified: ago(2) },
   { name: 'session.go.patch', path: 'data/artifacts/internal/auth/session.go.patch', type: 'file', size: 320, modified: ago(2) },
   { name: 'agent.db', path: 'data/agent.db', type: 'file', size: 2411724, modified: ago(0.1) },
+]
+
+export const mockSessions: Session[] = [
+  { id: 'sess-1', user_id: 'sukeke', channel_type: 'cli', channel_id: 'local', project_id: 'proj-1', status: 'ACTIVE', title: '修复登录 Bug', last_active_at: ago(0.1), created_at: ago(48), updated_at: ago(0.1) },
+  { id: 'sess-2', user_id: 'sukeke', channel_type: 'web', channel_id: 'web-local', project_id: 'proj-3', status: 'ACTIVE', title: '传奇世界观故事', last_active_at: ago(0.5), created_at: ago(12), updated_at: ago(0.5) },
+  { id: 'sess-3', user_id: 'sukeke', channel_type: 'cli', channel_id: 'local', project_id: 'proj-2', status: 'PAUSED', title: '淘宝详情页生成', last_active_at: ago(6), created_at: ago(24), updated_at: ago(6) },
+  { id: 'sess-4', user_id: 'sukeke', channel_type: 'cli', channel_id: 'local', project_id: 'proj-4', status: 'COMPLETED', title: '后台商品修改', last_active_at: ago(48), created_at: ago(72), updated_at: ago(48) },
+  { id: 'sess-5', user_id: 'sukeke', channel_type: 'cli', channel_id: 'local', project_id: '', status: 'EXPIRED', title: '临时问答', last_active_at: ago(30), created_at: ago(36), updated_at: ago(30) },
 ]

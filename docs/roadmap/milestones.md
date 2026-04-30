@@ -457,3 +457,33 @@ M1 和 M3 是执行系统的骨架，必须保持简单、可测、可恢复。M
 ### M10.3：Hard Observer + Acceptance Checks
 
 目标：补强 Observer / State Interpreter，让工具结果能转成更硬的状态证据，包括文件 diff 是否真实存在、测试失败原因、浏览器页面是否满足目标、文档产物是否包含目标内容，以及 reviewer 可引用的机械断言。
+
+### M10.5：Web Console Session 管理 + Project 看板
+
+目标：将 session 管理和 project 展示放入 Web Console。Session 页面支持列表、状态筛选、详情面板（含运行时上下文）。Project 页面改造为 Jira 风格看板，按 Active / Completed / Archived 分列展示，每个卡片显示任务进度条和统计。
+
+当前状态：已实现。后端新增 session API（GET /api/sessions、GET /api/sessions/:id、GET /api/sessions/:id/context），前端新增 SessionsView 和 Jira 风格 ProjectsView，侧边栏导航已更新。
+
+范围：
+
+1. 后端：SessionStore 接口、session API 路由和 handler、ListSessions store 方法、APIServer 注入 SessionStore。
+2. 前端：Session/SessionContext 类型定义、API 客户端 session 方法、mock 数据。
+3. SessionsView：状态筛选栏、session 列表（通道图标、标题、状态、最后活跃）、详情面板（基础信息网格、项目链接、运行时上下文）。
+4. ProjectsView：Board / List 切换、三列看板（Active / Completed / Archived）、卡片含进度条和任务统计。
+5. 路由和导航：/sessions 路由、侧边栏 Sessions 项、StatusBadge 新增 PAUSED/EXPIRED 颜色。
+
+验收标准：
+
+1. `go build ./...` 通过。
+2. Web Console 侧边栏显示 Sessions 导航项。
+3. Sessions 页面列出所有 session，支持状态筛选。
+4. 点击 session 展开详情面板，显示运行时上下文。
+5. Projects 页面默认 Board 视图，按 Active / Completed / Archived 分列。
+6. 每个 Project 卡片显示任务进度条和统计。
+7. Board / List 视图可切换。
+
+非目标：
+
+1. 不实现 session 暂停/恢复/过期清理的操作按钮（需后端 POST 接口）。
+2. 不实现 project 看板拖拽排序。
+3. 不实现实时 SSE 推送 session 状态变化。

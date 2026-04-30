@@ -4,7 +4,7 @@ import type {
   Project, Task, TaskAttempt, TaskEvent, ToolCall, Observation,
   TestResult, ReviewResult, Artifact, ChatMessage, SkillCard,
   PersonaCard, MemoryItem, ChannelInfo, AppConfig, DashboardStats,
-  ProviderStatus, ChainDecision, FileEntry
+  ProviderStatus, ChainDecision, FileEntry, Session, SessionContext
 } from './types'
 
 import {
@@ -13,6 +13,7 @@ import {
   mockObservations, getEventsForTask, mockTestResults, mockReviewResults,
   mockArtifacts, mockChatMessages, mockSkills, mockPersonas,
   mockMemories, mockChannels, mockConfig, mockChainDecision, mockFiles,
+  mockSessions,
 } from './mock-data'
 
 // --- Generic request helper ---
@@ -188,4 +189,15 @@ export const api = {
 
   // Files — mock only
   async listFiles(_path?: string): Promise<FileEntry[]> { return mockFiles },
+
+  // Sessions
+  async listSessions(): Promise<Session[]> {
+    return withFallback(() => request<Session[]>('/sessions'), mockSessions)
+  },
+  async getSession(id: string): Promise<Session> {
+    return withFallback(() => request<Session>(`/sessions/${id}`), mockSessions.find(s => s.id === id) || mockSessions[0])
+  },
+  async getSessionContext(id: string): Promise<SessionContext | null> {
+    return withFallback(() => request<SessionContext>(`/sessions/${id}/context`), null)
+  },
 }
