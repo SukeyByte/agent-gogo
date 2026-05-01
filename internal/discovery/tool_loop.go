@@ -92,6 +92,14 @@ func (l *ToolLoop) probes(req Request) []probe {
 		{name: "code.index", args: map[string]any{"limit": 30, "symbol_limit": 60, "max_files": 2000}},
 		{name: "git.status", args: map[string]any{}},
 	}
+	if needsBrowserDiscovery(req) {
+		for _, rawURL := range extractURLs(strings.Join([]string{req.Project.Goal, req.ChainDecision.Reason, query}, " ")) {
+			probes = append(probes,
+				probe{name: "browser.open", args: map[string]any{"url": rawURL}},
+				probe{name: "browser.extract", args: map[string]any{"query": ""}},
+			)
+		}
+	}
 	if query != "" {
 		probes = append(probes, probe{name: "code.search", args: map[string]any{"query": query, "limit": 20}})
 	}
@@ -99,6 +107,45 @@ func (l *ToolLoop) probes(req Request) []probe {
 		probes = append(probes, probe{name: "file.read", args: map[string]any{"path": path, "max_bytes": 6000}})
 	}
 	return probes
+}
+
+func needsBrowserDiscovery(req Request) bool {
+	text := strings.ToLower(strings.Join([]string{
+		req.Project.Goal,
+		req.IntentProfile.TaskType,
+		req.ChainDecision.Reason,
+		strings.Join(req.IntentProfile.RequiredCapabilities, " "),
+		strings.Join(req.ChainDecision.ToolNames, " "),
+	}, " "))
+	if req.ChainDecision.NeedBrowser {
+		return true
+	}
+	for _, marker := range []string{"http://", "https://", "browser", "web page", "webpage", "网页", "页面", "浏览器"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractURLs(text string) []string {
+	seen := map[string]struct{}{}
+	var urls []string
+	for _, field := range strings.Fields(text) {
+		field = strings.Trim(field, `"'，。；;,.)]}`)
+		if !strings.HasPrefix(field, "http://") && !strings.HasPrefix(field, "https://") {
+			continue
+		}
+		if _, ok := seen[field]; ok {
+			continue
+		}
+		seen[field] = struct{}{}
+		urls = append(urls, field)
+		if len(urls) >= 3 {
+			break
+		}
+	}
+	return urls
 }
 
 func (l *ToolLoop) callProbe(ctx context.Context, probe probe) (Evidence, bool) {
@@ -149,6 +196,8 @@ func summarizeOutput(name string, output map[string]any) string {
 		return fmt.Sprintf("matches=%v query=%v", output["count"], output["query"])
 	case "file.read":
 		return fmt.Sprintf("read %v bytes from %v", output["bytes"], output["path"])
+	case "browser.open", "browser.extract", "browser.dom_summary":
+		return fmt.Sprintf("url=%v text=%s", output["url"], trim(fmt.Sprint(output["dom_summary"]), 300))
 	case "git.status":
 		status, _ := output["status"].(string)
 		if strings.TrimSpace(status) == "" {

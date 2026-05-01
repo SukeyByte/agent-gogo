@@ -169,7 +169,7 @@ export const api = {
       return {
         llm: { provider: '', model: '', base_url: '', api_key: '', timeout: raw.llm_timeout_seconds || 0 },
         embedding: { provider: '', model: '', base_url: '', api_key: '' },
-        browser: { provider: '', mcp_url: '', headless: false, timeout: raw.browser_timeout_seconds || 0 },
+        browser: { provider: '', mcp_url: '', headless: !!raw.browser_headless, timeout: raw.browser_timeout_seconds || 0 },
         storage: {
           workspace_path: raw.workspace_path || '',
           sqlite_path: raw.sqlite_path || '',

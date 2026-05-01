@@ -29,3 +29,20 @@ func TestLoadSkillRootsListReplacesDefault(t *testing.T) {
 		t.Fatalf("unexpected skill roots: %#v", cfg.Storage.SkillRoots)
 	}
 }
+
+func TestDefaultBrowserIsVisibleAndHeadlessEnvOverrides(t *testing.T) {
+	cfg := Default()
+	if cfg.Browser.Headless {
+		t.Fatal("expected default browser to be visible for local validation")
+	}
+
+	t.Setenv("AGENT_GOGO_CONFIG", "")
+	t.Setenv("AGENT_GOGO_BROWSER_HEADLESS", "true")
+	loaded, err := Load("")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !loaded.Browser.Headless {
+		t.Fatal("expected AGENT_GOGO_BROWSER_HEADLESS=true to enable headless mode")
+	}
+}

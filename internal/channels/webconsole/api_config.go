@@ -99,6 +99,7 @@ func flattenConfigPayload(body map[string]any) map[string]string {
 		put("llm_timeout_seconds", firstPresent(llm, "timeout", "timeout_seconds"))
 	}
 	if browser, _ := body["browser"].(map[string]any); browser != nil {
+		put("browser_headless", browser["headless"])
 		put("browser_timeout_seconds", firstPresent(browser, "timeout", "timeout_seconds"))
 	}
 	for _, key := range []string{
@@ -108,6 +109,7 @@ func flattenConfigPayload(body map[string]any) map[string]string {
 		"require_confirm_high_risk",
 		"shell_allowlist",
 		"llm_timeout_seconds",
+		"browser_headless",
 		"browser_timeout_seconds",
 	} {
 		if value, ok := body[key]; ok {
@@ -140,6 +142,9 @@ func (s *APIServer) applyConfigPayload(payload map[string]string) {
 	}
 	if value, ok := intPayload(payload, "llm_timeout_seconds"); ok {
 		s.config.LLMTimeoutSeconds = value
+	}
+	if value, ok := boolPayload(payload, "browser_headless"); ok {
+		s.config.BrowserHeadless = value
 	}
 	if value, ok := intPayload(payload, "browser_timeout_seconds"); ok {
 		s.config.BrowserTimeoutSeconds = value

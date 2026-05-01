@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -146,9 +147,11 @@ func (b *Bridge) open(ctx context.Context, rawURL string) (browserResult, error)
 	if err := b.navigate(ctx, created.WebSocketDebuggerURL, rawURL); err != nil {
 		return browserResult{}, err
 	}
+	_ = b.bringPageToFront(ctx, created.WebSocketDebuggerURL)
 	if err := b.waitReady(ctx, created.WebSocketDebuggerURL); err != nil {
 		return browserResult{}, err
 	}
+	_ = b.bringPageToFront(ctx, created.WebSocketDebuggerURL)
 	if err := b.waitReadableText(ctx, created.WebSocketDebuggerURL); err != nil {
 		return browserResult{}, err
 	}
@@ -157,6 +160,7 @@ func (b *Bridge) open(ctx context.Context, rawURL string) (browserResult, error)
 		return browserResult{}, err
 	}
 	created.URL = currentURL
+	_ = b.bringChromeWindowToFront(ctx, currentURL)
 
 	b.mu.Lock()
 	b.last = created
@@ -360,8 +364,41 @@ func (b *Bridge) input(ctx context.Context, selector string, value string) (brow
 	expression := fmt.Sprintf(`(() => {
 const selector = %s;
 const value = %s;
-const el = document.querySelector(selector);
-if (!el) return {ok:false, reason:'selector not found', url:location.href};
+const norm = (text) => String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+const candidates = Array.from(document.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"]'));
+const labelText = (el) => {
+  const labels = [];
+  if (el.id) {
+    labels.push(...Array.from(document.querySelectorAll('label[for="' + CSS.escape(el.id) + '"]')).map((label) => label.innerText || label.textContent));
+  }
+  const parentLabel = el.closest('label');
+  if (parentLabel) labels.push(parentLabel.innerText || parentLabel.textContent);
+  labels.push(el.getAttribute('aria-label'), el.getAttribute('name'), el.getAttribute('id'), el.getAttribute('placeholder'), el.getAttribute('title'));
+  return labels.filter(Boolean).join(' ');
+};
+const selectorHints = [selector];
+const attrMatch = selector.match(/\[(?:name|aria-label|placeholder|id)=["']?([^"'\]]+)["']?\]/i);
+if (attrMatch) selectorHints.push(attrMatch[1]);
+if (/^[#.][\w-]+$/.test(selector)) selectorHints.push(selector.slice(1));
+let el = null;
+try {
+  el = document.querySelector(selector);
+} catch (_) {}
+if (!el) {
+  const hints = selectorHints.map(norm).filter(Boolean);
+  const scored = candidates
+    .map((candidate, index) => {
+      const label = norm(labelText(candidate));
+      const exact = hints.some((hint) => label === hint || norm(candidate.getAttribute('name')) === hint || norm(candidate.id) === hint);
+      const contains = hints.some((hint) => hint && label.includes(hint));
+      return {candidate, score: (exact ? 1000 : 0) + (contains ? 400 : 0) - index};
+    })
+    .sort((a, b) => b.score - a.score);
+  if (scored.length === 1 || (scored[0] && scored[0].score > 0)) {
+    el = scored[0].candidate;
+  }
+}
+if (!el) return {ok:false, reason:'selector or field label not found', url:location.href};
 el.scrollIntoView({block:'center', inline:'center'});
 el.focus();
 if (el.isContentEditable) {
@@ -371,7 +408,11 @@ if (el.isContentEditable) {
 } else {
   el.setAttribute('value', value);
 }
-el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertReplacementText', data:value}));
+try {
+  el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertReplacementText', data:value}));
+} catch (_) {
+  el.dispatchEvent(new Event('input', {bubbles:true}));
+}
 el.dispatchEvent(new Event('change', {bubbles:true}));
 return {ok:true, url:location.href, text:document.body ? document.body.innerText : ''};
 })()`, string(selectorJSON), string(valueJSON))
@@ -585,8 +626,43 @@ func (b *Bridge) navigate(ctx context.Context, websocketURL string, rawURL strin
 	if _, err := session.Call(ctx, "Page.enable", nil); err != nil {
 		return err
 	}
+	_, _ = session.Call(ctx, "Page.bringToFront", nil)
 	_, err = session.Call(ctx, "Page.navigate", map[string]any{"url": rawURL})
 	return err
+}
+
+func (b *Bridge) bringPageToFront(ctx context.Context, websocketURL string) error {
+	session, err := dialCDP(ctx, websocketURL)
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+	_, err = session.Call(ctx, "Page.bringToFront", nil)
+	return err
+}
+
+func (b *Bridge) bringChromeWindowToFront(ctx context.Context, targetURL string) error {
+	if b.config.Headless || runtime.GOOS != "darwin" || strings.TrimSpace(targetURL) == "" {
+		return nil
+	}
+	script := `
+on run argv
+  set targetURL to item 1 of argv
+  tell application "Google Chrome"
+    activate
+    repeat with w in windows
+      set tabCount to count of tabs of w
+      repeat with i from 1 to tabCount
+        if URL of tab i of w is targetURL then
+          set active tab index of w to i
+          set index of w to 1
+          return
+        end if
+      end repeat
+    end repeat
+  end tell
+end run`
+	return exec.CommandContext(ctx, "osascript", "-e", script, targetURL).Run()
 }
 
 func (b *Bridge) waitReady(ctx context.Context, websocketURL string) error {

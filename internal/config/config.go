@@ -149,7 +149,7 @@ func Default() Config {
 			MCPURL:           "http://127.0.0.1:9222",
 			AutoStartMCP:     true,
 			DebugPort:        9223,
-			Headless:         true,
+			Headless:         false,
 			MaxSummaryLength: 12000,
 			Timeout:          60 * time.Second,
 		},
@@ -412,6 +412,9 @@ func applyEnv(cfg *Config) {
 	}
 	if value := os.Getenv("AGENT_GOGO_BROWSER_USER_DATA_DIR"); value != "" {
 		cfg.Browser.UserDataDir = value
+	}
+	if value := os.Getenv("AGENT_GOGO_BROWSER_HEADLESS"); value != "" {
+		cfg.Browser.Headless = parseBool(value)
 	}
 	if value := os.Getenv("AGENT_GOGO_ALLOW_SHELL"); value != "" {
 		cfg.Security.AllowShell = parseBool(value)

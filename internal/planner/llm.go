@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/SukeyByte/agent-gogo/internal/chain"
 	"github.com/SukeyByte/agent-gogo/internal/domain"
 	"github.com/SukeyByte/agent-gogo/internal/llmjson"
 	"github.com/SukeyByte/agent-gogo/internal/prompts"
@@ -47,6 +48,7 @@ func (p *LLMPlanner) PlanProject(ctx context.Context, req PlanRequest) ([]domain
 	if len(output.Tasks) == 0 {
 		return nil, errors.New("planner returned no tasks")
 	}
+	output.Tasks = pruneResearchAndReflectionForSimpleBrowser(req, output.Tasks)
 	if maxTasks := maxTasksForRequest(req); len(output.Tasks) > maxTasks {
 		return nil, fmt.Errorf("planner returned %d tasks, above max %d for this request", len(output.Tasks), maxTasks)
 	}
@@ -187,6 +189,9 @@ func ensureResearchAndReflectionTasks(req PlanRequest, planned []plannedTask) []
 }
 
 func needsResearchAndReflection(req PlanRequest) bool {
+	if isSimpleBrowserReadRequest(req) {
+		return false
+	}
 	fields := []string{
 		req.UserInput,
 		req.Project.Goal,
@@ -196,7 +201,7 @@ func needsResearchAndReflection(req PlanRequest) bool {
 	fields = append(fields, req.IntentProfile.Domains...)
 	fields = append(fields, req.IntentProfile.RequiredCapabilities...)
 	text := strings.ToLower(strings.Join(fields, " "))
-	if req.ChainDecision.Level == "L3" {
+	if chain.IsProjectScale(req.ChainDecision) {
 		return true
 	}
 	for _, marker := range []string{"medium", "high", "complex", "code", "web", "browser", "debug", "fix", "修复", "调试", "研究", "网页"} {
@@ -207,8 +212,67 @@ func needsResearchAndReflection(req PlanRequest) bool {
 	return false
 }
 
+func isSimpleBrowserReadRequest(req PlanRequest) bool {
+	if req.ChainDecision.Level == chain.LevelProject || req.ChainDecision.RequiresDAG {
+		return false
+	}
+	if req.ChainDecision.Level != "" && req.ChainDecision.Level != chain.LevelDirect && req.ChainDecision.Level != chain.LevelAssist {
+		return false
+	}
+	if req.ChainDecision.EstimatedSteps > 6 {
+		return false
+	}
+	text := strings.ToLower(strings.Join([]string{
+		req.UserInput,
+		req.Project.Goal,
+		req.IntentProfile.TaskType,
+		req.IntentProfile.Complexity,
+		strings.Join(req.IntentProfile.Domains, " "),
+	}, " "))
+	if !(req.ChainDecision.NeedBrowser || strings.Contains(text, "http://") || strings.Contains(text, "https://") || strings.Contains(text, "browser") || strings.Contains(text, "网页") || strings.Contains(text, "页面")) {
+		return false
+	}
+	for _, marker := range []string{"code", "debug", "fix", "patch", "write file", "create file", "login", "submit", "代码", "修复", "登录", "提交"} {
+		if strings.Contains(text, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+func pruneResearchAndReflectionForSimpleBrowser(req PlanRequest, planned []plannedTask) []plannedTask {
+	if !isSimpleBrowserReadRequest(req) {
+		return planned
+	}
+	pruned := make([]plannedTask, 0, len(planned))
+	removed := map[string]struct{}{}
+	for _, task := range planned {
+		if taskMatches(task, []string{"研究", "research", "context", "反思", "reflection", "验收口径", "decomposition"}) {
+			if title := strings.TrimSpace(task.Title); title != "" {
+				removed[title] = struct{}{}
+			}
+			continue
+		}
+		pruned = append(pruned, task)
+	}
+	if len(pruned) == 0 {
+		return planned
+	}
+	for i := range pruned {
+		deps := pruned[i].DependsOn[:0]
+		for _, dependency := range pruned[i].DependsOn {
+			if _, ok := removed[dependency]; ok {
+				continue
+			}
+			deps = append(deps, dependency)
+		}
+		pruned[i].DependsOn = deps
+	}
+	return pruned
+}
+
 func ensureL3MinimumDecomposition(req PlanRequest, planned []plannedTask) []plannedTask {
-	if req.ChainDecision.Level != "L3" || len(planned) >= 4 {
+	if !chain.IsProjectScale(req.ChainDecision) || len(planned) >= 4 {
 		return planned
 	}
 	out := append([]plannedTask(nil), planned...)
@@ -230,7 +294,7 @@ func ensureL3MinimumDecomposition(req PlanRequest, planned []plannedTask) []plan
 		out = append(out, plannedTask{
 			Phase:                l3FallbackPhase(out),
 			Title:                "执行首个可验收切片",
-			Goal:                 "把传奇级目标压缩成一个可运行、可验收的最小切片并执行。",
+			Goal:                 "把项目级目标压缩成一个可运行、可验收的最小切片并执行。",
 			Description:          "不要把整个目标当成一个大任务；先完成一个有证据、可继续扩展的切片。",
 			Type:                 fallbackTaskType(req),
 			DependsOn:            depends,
@@ -268,7 +332,7 @@ func ensureL3MinimumDecomposition(req PlanRequest, planned []plannedTask) []plan
 
 func maxTasksForRequest(req PlanRequest) int {
 	text := strings.ToLower(strings.Join([]string{req.IntentProfile.Complexity, req.IntentProfile.TaskType, req.Project.Goal, req.UserInput}, " "))
-	if req.ChainDecision.Level == "L3" || strings.Contains(text, "high") || strings.Contains(text, "complex") || strings.Contains(text, "project") || strings.Contains(text, "项目") {
+	if chain.IsProjectScale(req.ChainDecision) || strings.Contains(text, "high") || strings.Contains(text, "complex") || strings.Contains(text, "project") || strings.Contains(text, "项目") {
 		return 15
 	}
 	if strings.Contains(text, "medium") || strings.Contains(text, "planned") || strings.Contains(text, "中等") {

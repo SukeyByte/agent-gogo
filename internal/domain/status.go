@@ -22,6 +22,7 @@ const (
 var taskTransitions = map[TaskStatus]map[TaskStatus]struct{}{
 	TaskStatusDraft: {
 		TaskStatusReady:     {},
+		TaskStatusBlocked:   {},
 		TaskStatusCancelled: {},
 	},
 	TaskStatusReady: {

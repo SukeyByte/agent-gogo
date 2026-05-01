@@ -38,6 +38,7 @@ type ConfigView struct {
 	AllowShell             bool     `json:"allow_shell"`
 	ShellAllowlist         []string `json:"shell_allowlist"`
 	LLMTimeoutSeconds      int      `json:"llm_timeout_seconds"`
+	BrowserHeadless        bool     `json:"browser_headless"`
 	BrowserTimeoutSeconds  int      `json:"browser_timeout_seconds"`
 }
 

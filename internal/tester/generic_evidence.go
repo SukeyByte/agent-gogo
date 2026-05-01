@@ -2,8 +2,10 @@ package tester
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/SukeyByte/agent-gogo/internal/domain"
@@ -128,7 +130,82 @@ func genericEvidenceFailure(task domain.Task, observations []domain.Observation,
 	if taskRequiresResearchEvidence(task) && !hasResearchToolEvidence {
 		return "research task requires successful discovery tool evidence"
 	}
+	if reason := requiredFileEvidenceFailure(task, calls); reason != "" {
+		return reason
+	}
 	return ""
+}
+
+func requiredFileEvidenceFailure(task domain.Task, calls []domain.ToolCall) string {
+	required := requiredFileNames(task)
+	if len(required) < 2 {
+		return ""
+	}
+	written := map[string]struct{}{}
+	for _, call := range calls {
+		if call.Status != domain.ToolCallStatusSucceeded {
+			continue
+		}
+		switch call.Name {
+		case "file.write", "artifact.write", "document.write":
+			for _, path := range callPaths(call) {
+				if base := filepath.Base(path); base != "." && base != "/" && strings.TrimSpace(base) != "" {
+					written[base] = struct{}{}
+				}
+			}
+		}
+	}
+	var missing []string
+	for _, name := range required {
+		if _, ok := written[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return "task requires file artifact(s) not written in this attempt: " + strings.Join(missing, ", ")
+}
+
+func requiredFileNames(task domain.Task) []string {
+	text := strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " ")
+	seen := map[string]struct{}{}
+	var out []string
+	for _, field := range strings.FieldsFunc(text, func(r rune) bool {
+		return r == ' ' || r == '\n' || r == '\t' || r == ',' || r == '，' || r == '、' || r == ';' || r == '；' || r == ':' || r == '：' || r == '(' || r == ')' || r == '[' || r == ']' || r == '"' || r == '\''
+	}) {
+		field = strings.TrimSpace(field)
+		lower := strings.ToLower(field)
+		if !(strings.HasSuffix(lower, ".html") || strings.HasSuffix(lower, ".css") || strings.HasSuffix(lower, ".js") || strings.HasSuffix(lower, ".md")) {
+			continue
+		}
+		name := filepath.Base(field)
+		if name == "." || strings.TrimSpace(name) == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+func callPaths(call domain.ToolCall) []string {
+	var paths []string
+	for _, raw := range []string{call.OutputJSON, call.InputJSON} {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			continue
+		}
+		for _, key := range []string{"path", "artifact_ref"} {
+			if value, _ := payload[key].(string); strings.TrimSpace(value) != "" {
+				paths = append(paths, value)
+			}
+		}
+	}
+	return paths
 }
 
 func taskRequiresResearchEvidence(task domain.Task) bool {

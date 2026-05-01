@@ -140,6 +140,68 @@ func TestTaskRequiresDiagnosticTestRunAllowsFailureOutputTask(t *testing.T) {
 	}
 }
 
+func TestGenericEvidenceTesterRequiresNamedFileArtifacts(t *testing.T) {
+	ctx := context.Background()
+	sqlite, _, task, attempt := genericEvidenceFixture(t)
+	defer sqlite.Close()
+	task.Description = "创建 index.html、styles.css、app.js 三个静态网站文件"
+	task.AcceptanceCriteria = []string{"index.html、styles.css、app.js 已写入"}
+
+	if _, err := sqlite.CreateObservation(ctx, domain.Observation{AttemptID: attempt.ID, Type: "state.file_changed", Summary: "wrote file"}); err != nil {
+		t.Fatalf("state observation: %v", err)
+	}
+	if _, err := sqlite.CreateObservation(ctx, domain.Observation{AttemptID: attempt.ID, Type: "agent.finish", Summary: "done"}); err != nil {
+		t.Fatalf("finish observation: %v", err)
+	}
+	if _, err := sqlite.CreateToolCall(ctx, domain.ToolCall{
+		AttemptID:  attempt.ID,
+		Name:       "file.write",
+		InputJSON:  `{"path":"artifacts/site/index.html"}`,
+		OutputJSON: `{"path":"artifacts/site/index.html"}`,
+		Status:     domain.ToolCallStatusSucceeded,
+	}); err != nil {
+		t.Fatalf("tool call: %v", err)
+	}
+	tester := NewGenericEvidenceTester(sqlite)
+	if _, err := tester.Test(ctx, task, attempt); err == nil {
+		t.Fatal("expected missing named files to fail")
+	}
+}
+
+func TestGenericEvidenceTesterAcceptsAllNamedFileArtifacts(t *testing.T) {
+	ctx := context.Background()
+	sqlite, _, task, attempt := genericEvidenceFixture(t)
+	defer sqlite.Close()
+	task.Description = "创建 index.html、styles.css、app.js 三个静态网站文件"
+	task.AcceptanceCriteria = []string{"index.html、styles.css、app.js 已写入"}
+
+	if _, err := sqlite.CreateObservation(ctx, domain.Observation{AttemptID: attempt.ID, Type: "state.file_changed", Summary: "wrote files"}); err != nil {
+		t.Fatalf("state observation: %v", err)
+	}
+	if _, err := sqlite.CreateObservation(ctx, domain.Observation{AttemptID: attempt.ID, Type: "agent.finish", Summary: "done"}); err != nil {
+		t.Fatalf("finish observation: %v", err)
+	}
+	for _, path := range []string{"artifacts/site/index.html", "artifacts/site/styles.css", "artifacts/site/app.js"} {
+		if _, err := sqlite.CreateToolCall(ctx, domain.ToolCall{
+			AttemptID:  attempt.ID,
+			Name:       "file.write",
+			InputJSON:  `{"path":"` + path + `"}`,
+			OutputJSON: `{"path":"` + path + `"}`,
+			Status:     domain.ToolCallStatusSucceeded,
+		}); err != nil {
+			t.Fatalf("tool call: %v", err)
+		}
+	}
+	tester := NewGenericEvidenceTester(sqlite)
+	result, err := tester.Test(ctx, task, attempt)
+	if err != nil {
+		t.Fatalf("expected named file artifacts to pass: %v", err)
+	}
+	if result.TestResult.Status != domain.TestStatusPassed {
+		t.Fatalf("expected passed, got %s", result.TestResult.Status)
+	}
+}
+
 func genericEvidenceFixture(t *testing.T) (*store.SQLiteStore, domain.Project, domain.Task, domain.TaskAttempt) {
 	t.Helper()
 	ctx := context.Background()

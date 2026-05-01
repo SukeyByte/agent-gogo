@@ -47,6 +47,9 @@ func TestGenericExecutorRunsToolActionLoop(t *testing.T) {
 	})
 	step := 0
 	llm := provider.ChatFunc(func(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+		if len(req.Tools) != 0 {
+			t.Fatalf("generic executor should expose tools in JSON context, not provider tool_calls with dotted names: %#v", req.Tools)
+		}
 		step++
 		if step == 1 {
 			return provider.ChatResponse{Text: `{"action":"tool_call","tool":"file.write","args":{"path":"artifact.txt","content":"ok"},"reason":"write requested file"}`}, nil
@@ -344,6 +347,115 @@ func TestGenericExecutorAutoFinishesBrowserReadTask(t *testing.T) {
 	}
 }
 
+func TestGenericExecutorRejectsWebSummaryFinishWithoutBrowserEvidence(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	project, err := sqlite.CreateProject(ctx, domain.Project{Name: "generic", Goal: "summarize web"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task, err := sqlite.CreateTask(ctx, domain.Task{
+		ProjectID:          project.ID,
+		Title:              "总结网页",
+		Description:        "打开 https://example.com 并总结页面内容",
+		AcceptanceCriteria: []string{"总结基于页面可见文本"},
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	ready, err := sqlite.TransitionTask(ctx, task.ID, domain.TaskStatusReady, "ready")
+	if err != nil {
+		t.Fatalf("ready task: %v", err)
+	}
+
+	toolRuntime := tools.NewRuntime(sqlite)
+	toolRuntime.Register(tools.Spec{Name: "file.read", Description: "read file", RiskLevel: "low"}, func(ctx context.Context, args map[string]any) (tools.Result, error) {
+		return tools.Result{Success: true, Output: map[string]any{"path": "README.md", "content": "local file"}, EvidenceRef: "README.md"}, nil
+	})
+	step := 0
+	llm := provider.ChatFunc(func(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+		step++
+		switch step {
+		case 1:
+			return provider.ChatResponse{Text: `{"action":"tool_call","tool":"file.read","args":{"path":"README.md"},"reason":"wrong evidence","summary":"","question":""}`}, nil
+		case 2:
+			return provider.ChatResponse{Text: `{"action":"finish","tool":"","args":{},"reason":"summary done","summary":"Example summary without browser evidence","question":""}`}, nil
+		default:
+			return provider.ChatResponse{Text: `{"action":"finish","tool":"","args":{},"reason":"still done","summary":"Still no browser evidence","question":""}`}, nil
+		}
+	})
+	exec := NewGenericExecutor(GenericExecutorOptions{
+		Store:    sqlite,
+		Tools:    toolRuntime,
+		LLM:      llm,
+		Model:    "test-model",
+		MaxSteps: 3,
+	})
+	_, err = exec.Execute(ctx, ready)
+	if err == nil || !strings.Contains(err.Error(), "max action steps") {
+		t.Fatalf("expected executor to reject finish without browser evidence, got %v", err)
+	}
+}
+
+func TestGenericExecutorAllowsResearchFinishWithBrowserEvidence(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	project, err := sqlite.CreateProject(ctx, domain.Project{Name: "generic", Goal: "research web"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task, err := sqlite.CreateTask(ctx, domain.Task{
+		ProjectID:          project.ID,
+		Title:              "研究上下文与可用资料",
+		Description:        "先读取、搜索或浏览必要资料，确认任务事实、约束、现有实现和可用工具",
+		AcceptanceCriteria: []string{"已用可用工具收集完成任务所需的事实和上下文"},
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	ready, err := sqlite.TransitionTask(ctx, task.ID, domain.TaskStatusReady, "ready")
+	if err != nil {
+		t.Fatalf("ready task: %v", err)
+	}
+
+	toolRuntime := tools.NewRuntime(sqlite)
+	toolRuntime.Register(tools.Spec{Name: "browser.open", Description: "open page", RiskLevel: "low"}, func(ctx context.Context, args map[string]any) (tools.Result, error) {
+		return tools.Result{Success: true, Output: map[string]any{"url": args["url"], "dom_summary": "Example Domain"}, EvidenceRef: "https://example.com"}, nil
+	})
+	step := 0
+	llm := provider.ChatFunc(func(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+		step++
+		if step == 1 {
+			return provider.ChatResponse{Text: `{"action":"tool_call","tool":"browser.open","args":{"url":"https://example.com"},"reason":"collect web evidence","summary":"","question":""}`}, nil
+		}
+		return provider.ChatResponse{Text: `{"action":"finish","tool":"","args":{},"reason":"research complete","summary":"browser evidence captured","question":""}`}, nil
+	})
+	exec := NewGenericExecutor(GenericExecutorOptions{
+		Store:    sqlite,
+		Tools:    toolRuntime,
+		LLM:      llm,
+		Model:    "test-model",
+		MaxSteps: 3,
+	})
+	result, err := exec.Execute(ctx, ready)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if result.Task.Status != domain.TaskStatusImplemented {
+		t.Fatalf("expected implemented task, got %s", result.Task.Status)
+	}
+}
+
 func TestGenericExecutorContinuesAfterUnsupportedAction(t *testing.T) {
 	ctx := context.Background()
 	sqlite, err := store.OpenSQLite(ctx, ":memory:")
@@ -505,6 +617,45 @@ func TestAutoFinishAcceptsReadOnlyFileTask(t *testing.T) {
 		t.Fatal("expected read-only file task to auto finish")
 	}
 	if !strings.Contains(summary, "file content captured") {
+		t.Fatalf("unexpected summary %q", summary)
+	}
+}
+
+func TestAutoFinishDoesNotAcceptBrowserOpenOnlyForInteractionTask(t *testing.T) {
+	task := domain.Task{
+		Title:              "Open URL and interact with page",
+		Description:        "Open the URL, type 'hello-browser' in the Message input, click Go, and wait for 'done:hello-browser' to appear.",
+		AcceptanceCriteria: []string{"done:hello-browser appears on the page"},
+	}
+	summary, ok := autoFinishSummary(task, []actionEvent{{
+		Step:    1,
+		Action:  "tool_call",
+		Tool:    "browser.open",
+		State:   "observed",
+		Summary: "browser.open captured browser state",
+		Output:  `{"dom_summary":"Agent Browser Test MessageGo"}`,
+	}})
+	if ok {
+		t.Fatalf("unexpected auto finish: %s", summary)
+	}
+}
+
+func TestAutoFinishAcceptsCompletedBrowserInteractionTask(t *testing.T) {
+	task := domain.Task{
+		Title:              "Open URL and interact with page",
+		Description:        "Open the URL, type 'hello-browser' in the Message input, click Go, and wait for 'done:hello-browser' to appear.",
+		AcceptanceCriteria: []string{"done:hello-browser appears on the page"},
+	}
+	summary, ok := autoFinishSummary(task, []actionEvent{
+		{Step: 1, Action: "tool_call", Tool: "browser.open", State: "observed", Output: `{"dom_summary":"Agent Browser Test MessageGo"}`},
+		{Step: 2, Action: "tool_call", Tool: "browser.input", State: "observed", Output: `{"dom_summary":"Agent Browser Test MessageGo"}`},
+		{Step: 3, Action: "tool_call", Tool: "browser.click", State: "observed", Output: `{"dom_summary":"Agent Browser Test MessageGo done:hello-browser"}`},
+		{Step: 4, Action: "tool_call", Tool: "browser.extract", State: "observed", Summary: "done text captured", Output: `{"dom_summary":"Agent Browser Test MessageGo done:hello-browser"}`},
+	})
+	if !ok {
+		t.Fatal("expected completed browser interaction task to auto finish")
+	}
+	if !strings.Contains(summary, "browser evidence captured") {
 		t.Fatalf("unexpected summary %q", summary)
 	}
 }

@@ -100,6 +100,7 @@ func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Wri
 		AllowShell:             cfg.Security.AllowShell,
 		ShellAllowlist:         append([]string(nil), cfg.Security.ShellAllowlist...),
 		LLMTimeoutSeconds:      int(cfg.LLM.Timeout.Seconds()),
+		BrowserHeadless:        cfg.Browser.Headless,
 		BrowserTimeoutSeconds:  int(cfg.Browser.Timeout.Seconds()),
 	}, channelID, sessionID, distDir)
 	apiServer.UseSessionStore(sqlite)

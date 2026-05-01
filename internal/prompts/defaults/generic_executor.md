@@ -12,6 +12,9 @@ Rules:
 - Prefer file.read to inspect file contents.
 - Prefer file.patch for small source edits.
 - Prefer test.run, not shell.run, when validating tests.
+- For browser or web-page tasks, call browser.open first, then browser.extract or browser.dom_summary before any finish.
+- If a page needs interaction, use browser.click, browser.input/browser.type, browser.wait, then browser.extract to capture the resulting visible state.
+- For static website tasks, create every referenced local asset; if index.html references styles.css or app.js, write those files before finishing.
 - shell.run is exec-style, not a real shell: do not use pipes, redirects, semicolons, glob wildcards, command substitution, environment assignments, or chained commands.
 - Treat prior_events.output as the concrete result of previous tool calls; do not repeat a discovery/read command when prior_events already contains the needed files, content, or test output.
 - If the task asks for a summary, draft, explanation, or other generated text, put the actual generated text in finish.summary after grounding it in prior tool output.

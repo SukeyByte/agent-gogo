@@ -241,7 +241,6 @@ func (e *GenericExecutor) nextAction(ctx context.Context, task domain.Task, atte
 		User:       string(payload),
 		SchemaName: "generic_agent_action",
 		Schema:     agentActionSchema(specs),
-		Tools:      providerTools(specs),
 		Metadata: map[string]string{
 			"stage":      "executor.generic.action",
 			"task_id":    task.ID,
@@ -291,7 +290,19 @@ func (e *GenericExecutor) normalizeToolName(name string) string {
 		"git_status":      "git.status",
 		"browser_open":    "browser.open",
 		"open_url":        "browser.open",
+		"open_browser":    "browser.open",
+		"browser_click":   "browser.click",
+		"click_browser":   "browser.click",
+		"browser_type":    "browser.type",
+		"type_text":       "browser.type",
+		"browser_input":   "browser.input",
+		"input_text":      "browser.input",
+		"browser_wait":    "browser.wait",
+		"wait_browser":    "browser.wait",
 		"browser_extract": "browser.extract",
+		"extract_text":    "browser.extract",
+		"dom_summary":     "browser.dom_summary",
+		"screenshot":      "browser.screenshot",
 	}
 	if mapped := aliases[strings.ToLower(name)]; e.isAvailableTool(mapped) {
 		return mapped
@@ -442,11 +453,15 @@ func finishEvidenceReady(task domain.Task, events []actionEvent) (bool, string) 
 	hasBrowserRead := false
 	hasTestRun := false
 	hasPassingTest := false
+	hasResearchEvidence := false
 	for _, event := range events {
 		switch event.State {
 		case "succeeded", "changed", "verified", "observed":
 			if event.Tool != "" {
 				hasSuccessfulToolEvidence = true
+			}
+			if isResearchEvidenceTool(event.Tool) {
+				hasResearchEvidence = true
 			}
 		}
 		if event.Tool == "test.run" {
@@ -474,8 +489,14 @@ func finishEvidenceReady(task domain.Task, events []actionEvent) (bool, string) 
 	if taskNeedsDiagnosticTestRun(task) && !hasTestRun {
 		return false, "finish requires test.run evidence for this task"
 	}
-	if taskNeedsBrowserRead(task) && !taskNeedsGeneratedText(task) && !hasBrowserRead {
+	if taskNeedsBrowserRead(task) && !hasBrowserRead {
 		return false, "finish requires browser evidence for this task"
+	}
+	if reason := browserInteractionMissingReason(task, events); reason != "" {
+		return false, reason
+	}
+	if taskNeedsResearchEvidence(task) && hasResearchEvidence {
+		return true, ""
 	}
 	if taskNeedsSourceRead(task) && !hasSourceRead {
 		return false, "finish requires file.read evidence for this task"
@@ -499,7 +520,7 @@ func autoFinishSummary(task domain.Task, events []actionEvent) (string, bool) {
 	}
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
-		if taskNeedsBrowserRead(task) && !taskNeedsGeneratedText(task) && hasBrowserRead && strings.HasPrefix(event.Tool, "browser.") && event.State == "observed" {
+		if taskNeedsBrowserRead(task) && !taskNeedsGeneratedText(task) && hasBrowserRead && browserInteractionMissingReason(task, events) == "" && strings.HasPrefix(event.Tool, "browser.") && event.State == "observed" {
 			return "browser evidence captured for this web-reading task: " + firstNonEmpty(event.Summary, event.Output), true
 		}
 		if taskNeedsReadOnly(task) && event.Tool == "file.read" && event.State == "succeeded" {
@@ -639,6 +660,75 @@ func taskNeedsBrowserRead(task domain.Task) bool {
 	return false
 }
 
+func browserInteractionMissingReason(task domain.Task, events []actionEvent) string {
+	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
+	needsInput := containsAny(text, []string{"type ", "input", "enter ", "fill ", "输入", "填入", "填写"})
+	needsClick := containsAny(text, []string{"click", "button", "点击", "按钮"})
+	needsWait := containsAny(text, []string{"wait", "appear", "appears", "出现", "等待"})
+	if !needsInput && !needsClick && !needsWait {
+		return ""
+	}
+	hasInput := false
+	hasClick := false
+	hasWait := false
+	expected := expectedBrowserText(text)
+	for _, event := range events {
+		if !browserEventSucceeded(event) {
+			continue
+		}
+		switch event.Tool {
+		case "browser.input", "browser.type":
+			hasInput = true
+		case "browser.click":
+			hasClick = true
+		case "browser.wait":
+			hasWait = true
+		}
+		if expected != "" && strings.Contains(strings.ToLower(event.Output), expected) {
+			hasWait = true
+		}
+	}
+	if needsInput && !hasInput {
+		return "finish requires browser.input or browser.type evidence for this task"
+	}
+	if needsClick && !hasClick {
+		return "finish requires browser.click evidence for this task"
+	}
+	if needsWait && !hasWait {
+		return "finish requires browser.wait evidence or observed target text for this task"
+	}
+	return ""
+}
+
+func browserEventSucceeded(event actionEvent) bool {
+	return strings.HasPrefix(event.Tool, "browser.") && (event.State == "observed" || event.State == "succeeded" || event.State == "changed" || event.State == "verified")
+}
+
+func containsAny(text string, markers []string) bool {
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func expectedBrowserText(text string) string {
+	if idx := strings.Index(text, "done:"); idx >= 0 {
+		end := idx
+		for end < len(text) {
+			ch := text[end]
+			if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == ':' || ch == '-' || ch == '_' {
+				end++
+				continue
+			}
+			break
+		}
+		return strings.TrimSpace(text[idx:end])
+	}
+	return ""
+}
+
 func taskNeedsGeneratedText(task domain.Task) bool {
 	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
 	for _, marker := range []string{
@@ -737,6 +827,34 @@ func taskNeedsCodeChange(task domain.Task) bool {
 		}
 	}
 	return false
+}
+
+func taskNeedsResearchEvidence(task domain.Task) bool {
+	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
+	for _, marker := range []string{
+		"研究上下文",
+		"可用资料",
+		"context-gathering",
+		"context gathering",
+		"research",
+		"grounding",
+		"收集完成任务所需的事实",
+		"必要资料",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isResearchEvidenceTool(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "code.index", "code.search", "code.symbols", "file.read", "browser.open", "browser.extract", "browser.dom_summary", "git.status", "git.diff":
+		return true
+	default:
+		return false
+	}
 }
 
 var genericExecutorPrompt = prompts.Text("generic_executor")

@@ -18,7 +18,7 @@ func main() {
 	debugPort := flag.Int("debug-port", 9223, "Chrome DevTools remote debugging port")
 	chromePath := flag.String("chrome-path", "", "Chrome executable path")
 	userDataDir := flag.String("user-data-dir", "", "Chrome profile directory")
-	headless := flag.Bool("headless", true, "run Chrome in headless mode")
+	headless := flag.Bool("headless", false, "run Chrome in headless mode")
 	maxSummaryLength := flag.Int("max-summary-length", 12000, "maximum extracted page text length")
 	flag.Parse()
 

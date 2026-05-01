@@ -510,16 +510,19 @@ M1 和 M3 是执行系统的骨架，必须保持简单、可测、可恢复。M
 
 目标：给 M10 收尾，补齐结构拆分、规划前探测、分层任务元数据、Web Console 管理 API、session 恢复执行和 code index 磁盘缓存，让通用 agent 主路径更接近 PRD/架构定义。
 
-当前状态：已实现。`internal/app/app.go` 拆出 CLI/Web/provider/browser 组装，`internal/tools/runtime.go` 拆出类型、注册表和内置工具注册；Go 端 Web Console 已从 `web/handlers` 迁到 `internal/channels/webconsole`；Planner 输出支持 `phases` 与任务级 `required_capabilities`；Runtime 在 Planner 前运行只读 DiscoveryLoop；Validator 优先使用结构化能力字段，并处理只读任务过度能力声明；Web Console 配置、Skills、Personas、Memory、session 操作和确认 ID 已接后端；code index cache 可持久化到 `data/code_index.json`。
+当前状态：已实现。`internal/app/app.go` 拆出 CLI/Web/provider/browser 组装，`internal/tools/runtime.go` 拆出类型、注册表和内置工具注册；Go 端 Web Console 已从 `web/handlers` 迁到 `internal/channels/webconsole`；Chain Router 输出 `requires_dag` / `estimated_steps`，由 AI 结构化判断项目级任务；Planner 输出支持 `phases` 与任务级 `required_capabilities`，并对项目级单伞状任务做可运行拆解保护；Runtime 在 Planner 前运行只读 DiscoveryLoop；Validator 优先使用结构化能力字段，并处理只读任务过度能力声明；Web Console 配置、Skills、Personas、Memory、session 操作和确认 ID 已接后端；channel goal 会自动运行 READY DAG 并推送 task/project 状态与结果；code index cache 可持久化到 `data/code_index.json`。
+
+2026-05-01 追加验收结论：用 Computer Use 按真实用户路径验证长篇写作、代码建站和 X/Twitter 运营三类任务后，M10.6 的基础闭环成立，但 end-to-end 通用性第一次未完全通过。随后已收尾修复 blocked dependency reconciliation、Planner/Validator 的 no-shell 能力过度声明、命名文件产物完整性检查、浏览器默认可见、Chrome MCP target 前置、browser discovery、browser input label 兜底、browser interaction evidence gate，以及 browser-only action sequence 被误升 L3 的问题。复测确认网页读取和浏览器 input/click 交互均可通过完整 `agent-gogo` 自然语言链路完成。X/Twitter 发帖仍受登录态和最终第三方通信确认约束，作为运营类高风险闭环的后续专门验收。
 
 范围：
 
 1. 结构拆分：`app/cli.go`、`app/providers.go`、`app/web.go`、`tools/types.go`、`tools/registry.go`、`tools/builtin_runtime.go`、`runtime/context_assets.go`。
 2. 规划质量：新增 `internal/discovery`，在 Planner 调用前用 `code.index`、`code.search`、`file.read`、`git.status` 和 memory search 收集上下文并注入 planning context。
-3. 分层任务：Task 持久化 `phase` 与 `required_capabilities`，Planner schema/prompt 要求 `phases + tasks`，Capability Validator 精确校验结构化能力。
+3. 分层任务：Router 用 `requires_dag` / `estimated_steps` 结构化识别项目级任务；Task 持久化 `phase` 与 `required_capabilities`，Planner schema/prompt 要求 `phases + tasks`，Capability Validator 精确校验结构化能力。
 4. Web Console：后端包路径为 `internal/channels/webconsole`；`POST /api/config` 与 `/config {...}` 命令热更新安全策略和上下文预算；Skills/Personas/Memory 页面读取真实 registry/index；确认 SSE 携带 `confirmation_id`。
 5. Session 操作：新增 Pause / Resume / Expire / Delete POST 接口，Resume 会触发关联 project 的 ready task 继续执行。
-6. 工程缓存：code index cache 落盘并在写入/patch 后失效，重启后可复用。
+6. Channel 运行闭环：`goal.submitted` 规划后自动运行 READY DAG，向 channel 推送 task lifecycle progress、done、blocked 和 project done。
+7. 工程缓存：code index cache 落盘并在写入/patch 后失效，重启后可复用。
 
 验收标准：
 
@@ -528,6 +531,16 @@ M1 和 M3 是执行系统的骨架，必须保持简单、可测、可恢复。M
 3. `RUN_DEEPSEEK_SMOKE=1 DEEPSEEK_API_KEY=... go test ./internal/planner -run TestDeepSeekPlannerStructuredSmoke -count=1 -timeout=5m` 通过，覆盖代码、网页、文档三类真实 LLM 规划。
 4. Web Console API 验证：`/api/config` 可读写，`/api/skills` 返回真实 skill registry，`/api/memory` 返回真实 memory index。
 5. Computer Use 验证：本地打开 Web Console，模拟代码读取、网页读取、文档总结三类普通用户任务，均能创建 project 并完成规划。
+6. `go test ./internal/chain ./internal/planner ./internal/runtime ./internal/communication` 覆盖 AI scale 识别、channel 自动运行、progress/result 通知和项目级伞状任务拆解。
+7. `RUN_DEEPSEEK_SMOKE=1 DEEPSEEK_API_KEY=... go test ./internal/chain -run TestDeepSeekRouterProjectScaleSmoke -count=1 -timeout=3m` 通过，验证无标签词输入也能由 AI scale 信号识别为项目级任务。
+8. 浏览器能力复测通过：`agent-gogo` 对 `https://example.com` 网页读取会真实调用 `browser.open` / `browser.extract` 并完成 1 个任务；本地交互页会真实调用 `browser.open` / `browser.input` / `browser.click`，页面出现 `done:hello-browser` 后完成任务。
+
+追加三向验收与收尾：
+
+1. 长篇写作：Web Console 能创建 project、规划任务、显示 blocked 和 paused，但未生成 `artifacts/writing/tide-city.md`。
+2. 代码建站：Web Console 能推进研究/反思任务并产生部分文件，但 `artifacts/site-observer/app.js` 缺失，产物完整性未通过。
+3. 运营发帖：Computer Use 能打开 X/Twitter 发帖入口，但访客模式未登录，页面停在登录流；未发送任何第三方内容。
+4. 收尾后新增单测和实测覆盖上述 blocked dependency、capability pruning、artifact completeness、browser opening、browser input/click 和 browser-only route normalization 问题。
 
 非目标：
 

@@ -173,7 +173,7 @@ func TestHandleChannelEventAutoRunsProjectAndEmitsResult(t *testing.T) {
 
 	if err := service.HandleChannelEvent(ctx, ChannelEvent{
 		Type: "goal.submitted",
-		Text: "完成一个传奇任务并汇报结果",
+		Text: "完成一个多阶段项目任务并汇报结果",
 		Payload: map[string]string{
 			"name": "Legendary goal",
 		},
@@ -209,6 +209,168 @@ func TestHandleChannelEventAutoRunsProjectAndEmitsResult(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("expected project done notification, got %#v", records)
+}
+
+func TestChannelEventReportsPlanningCapabilityBlockWithoutHTTPFailure(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	outbox := communication.NewMemoryOutbox()
+	commRuntime := communication.NewRuntime(outbox, communication.NewRenderer())
+	commRuntime.RegisterChannel("web", communication.NewWebConsoleAdapter("web"))
+
+	service := NewServiceWithComponents(
+		sqlite,
+		allBlockedPlanner{},
+		titleBlockingValidator{},
+		scheduler.NewReadyScheduler(sqlite),
+		executor.NewMinimalExecutor(sqlite),
+		tester.NewMinimalTester(sqlite),
+		reviewer.NewMinimalReviewer(sqlite),
+	)
+	service.UseCommunication("web", "session-1", commRuntime)
+
+	if err := service.HandleChannelEvent(ctx, ChannelEvent{
+		Type:    "goal.submitted",
+		Text:    "项目级任务需要不可用能力时也要通知 channel",
+		Payload: map[string]string{"name": "Blocked project-scale goal"},
+	}); err != nil {
+		t.Fatalf("expected channel event to convert planning block into channel status, got %v", err)
+	}
+
+	records, err := outbox.List(ctx)
+	if err != nil {
+		t.Fatalf("list outbox: %v", err)
+	}
+	if !hasRenderedText(records, "Project blocked during planning") {
+		t.Fatalf("expected project blocked notification, got %#v", records)
+	}
+}
+
+func TestRunProjectTasksRunsReadyTasksAndReportsBlockedRemainder(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	outbox := communication.NewMemoryOutbox()
+	commRuntime := communication.NewRuntime(outbox, communication.NewRenderer())
+	commRuntime.RegisterChannel("web", communication.NewWebConsoleAdapter("web"))
+
+	service := NewServiceWithComponents(
+		sqlite,
+		partialBlockedPlanner{},
+		titleBlockingValidator{},
+		scheduler.NewReadyScheduler(sqlite),
+		executor.NewMinimalExecutor(sqlite),
+		tester.NewMinimalTester(sqlite),
+		reviewer.NewMinimalReviewer(sqlite),
+	)
+	service.UseCommunication("web", "session-1", commRuntime)
+	project, err := service.CreateProject(ctx, CreateProjectRequest{Name: "Partial", Goal: "run what is safe and report blocked work"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	planned, err := service.PlanProject(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("plan project: %v", err)
+	}
+	if len(planned) != 1 || planned[0].Title != "Readable slice" {
+		t.Fatalf("expected one runnable task, got %#v", planned)
+	}
+	ran, err := service.RunProjectTasks(ctx, project.ID, 10)
+	if err != nil {
+		t.Fatalf("run project tasks: %v", err)
+	}
+	if ran != 1 {
+		t.Fatalf("expected one runnable task to run, got %d", ran)
+	}
+	tasks, err := sqlite.ListTasksByProject(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	statusByTitle := map[string]domain.TaskStatus{}
+	for _, task := range tasks {
+		statusByTitle[task.Title] = task.Status
+	}
+	if statusByTitle["Readable slice"] != domain.TaskStatusDone {
+		t.Fatalf("expected readable task done, got %#v", statusByTitle)
+	}
+	if statusByTitle["Blocked implementation"] != domain.TaskStatusBlocked {
+		t.Fatalf("expected blocked task to remain blocked, got %#v", statusByTitle)
+	}
+	records, err := outbox.List(ctx)
+	if err != nil {
+		t.Fatalf("list outbox: %v", err)
+	}
+	if !hasRenderedText(records, "Project run paused after 1 task(s)") {
+		t.Fatalf("expected blocked remainder notification, got %#v", records)
+	}
+}
+
+func TestRunProjectTasksBlocksTasksWaitingOnBlockedDependencies(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	outbox := communication.NewMemoryOutbox()
+	commRuntime := communication.NewRuntime(outbox, communication.NewRenderer())
+	commRuntime.RegisterChannel("web", communication.NewWebConsoleAdapter("web"))
+
+	service := NewServiceWithComponents(
+		sqlite,
+		blockedDependencyPlanner{},
+		titleBlockingValidator{},
+		scheduler.NewReadyScheduler(sqlite),
+		executor.NewMinimalExecutor(sqlite),
+		tester.NewMinimalTester(sqlite),
+		reviewer.NewMinimalReviewer(sqlite),
+	)
+	service.UseCommunication("web", "session-1", commRuntime)
+	project, err := service.CreateProject(ctx, CreateProjectRequest{Name: "Dependent block", Goal: "block dependent task"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if _, err := service.PlanProject(ctx, project.ID); err != nil {
+		t.Fatalf("plan project: %v", err)
+	}
+	ran, err := service.RunProjectTasks(ctx, project.ID, 10)
+	if err != nil {
+		t.Fatalf("run project tasks: %v", err)
+	}
+	if ran != 0 {
+		t.Fatalf("expected no runnable tasks, got %d", ran)
+	}
+	tasks, err := sqlite.ListTasksByProject(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	statusByTitle := map[string]domain.TaskStatus{}
+	for _, task := range tasks {
+		statusByTitle[task.Title] = task.Status
+	}
+	if statusByTitle["Blocked prerequisite"] != domain.TaskStatusBlocked {
+		t.Fatalf("expected prerequisite blocked, got %#v", statusByTitle)
+	}
+	if statusByTitle["Dependent task"] != domain.TaskStatusBlocked {
+		t.Fatalf("expected dependent task to be reconciled to BLOCKED, got %#v", statusByTitle)
+	}
+	records, err := outbox.List(ctx)
+	if err != nil {
+		t.Fatalf("list outbox: %v", err)
+	}
+	if !hasRenderedText(records, "Task blocked by dependency") {
+		t.Fatalf("expected dependency block notification, got %#v", records)
+	}
 }
 
 func TestServicePersistsPlannerDependenciesAndSchedulerHonorsDAG(t *testing.T) {
@@ -436,6 +598,98 @@ func (p dependencyPlanner) PlanProject(ctx context.Context, req planner.PlanRequ
 			DependsOn:          []string{"Outline mystery"},
 		},
 	}, nil
+}
+
+type allBlockedPlanner struct{}
+
+func (p allBlockedPlanner) PlanProject(ctx context.Context, req planner.PlanRequest) ([]domain.Task, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return []domain.Task{
+		{
+			ProjectID:            req.Project.ID,
+			Title:                "Blocked implementation",
+			Description:          "Needs unavailable implementation capability",
+			Status:               domain.TaskStatusDraft,
+			AcceptanceCriteria:   []string{"implementation is complete"},
+			RequiredCapabilities: []string{"blocked"},
+		},
+	}, nil
+}
+
+type partialBlockedPlanner struct{}
+
+func (p partialBlockedPlanner) PlanProject(ctx context.Context, req planner.PlanRequest) ([]domain.Task, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return []domain.Task{
+		{
+			ProjectID:          req.Project.ID,
+			Title:              "Readable slice",
+			Description:        "Collect read-only evidence",
+			Status:             domain.TaskStatusDraft,
+			AcceptanceCriteria: []string{"evidence collected"},
+		},
+		{
+			ProjectID:            req.Project.ID,
+			Title:                "Blocked implementation",
+			Description:          "Needs unavailable implementation capability",
+			Status:               domain.TaskStatusDraft,
+			AcceptanceCriteria:   []string{"implementation is complete"},
+			RequiredCapabilities: []string{"blocked"},
+		},
+	}, nil
+}
+
+type blockedDependencyPlanner struct{}
+
+func (p blockedDependencyPlanner) PlanProject(ctx context.Context, req planner.PlanRequest) ([]domain.Task, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return []domain.Task{
+		{
+			ProjectID:            req.Project.ID,
+			Title:                "Blocked prerequisite",
+			Description:          "Needs unavailable implementation capability",
+			Status:               domain.TaskStatusDraft,
+			AcceptanceCriteria:   []string{"blocked prerequisite is complete"},
+			RequiredCapabilities: []string{"blocked"},
+		},
+		{
+			ProjectID:          req.Project.ID,
+			Title:              "Dependent task",
+			Description:        "Depends on the blocked prerequisite",
+			Status:             domain.TaskStatusDraft,
+			AcceptanceCriteria: []string{"dependent task is complete"},
+			DependsOn:          []string{"Blocked prerequisite"},
+		},
+	}, nil
+}
+
+type titleBlockingValidator struct{}
+
+func (v titleBlockingValidator) ValidateTask(ctx context.Context, task domain.Task) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for _, capabilityName := range task.RequiredCapabilities {
+		if capabilityName == "blocked" {
+			return errors.New("capability unavailable")
+		}
+	}
+	return validator.NewMinimalTaskValidator().ValidateTask(ctx, task)
+}
+
+func hasRenderedText(records []communication.OutboxRecord, text string) bool {
+	for _, record := range records {
+		if strings.Contains(record.Rendered.Text, text) {
+			return true
+		}
+	}
+	return false
 }
 
 type contextRecordingExecutor struct {

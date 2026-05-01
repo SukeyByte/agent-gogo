@@ -75,29 +75,40 @@ func prunePassiveTaskCapabilities(task domain.Task, required []string) []string 
 	}
 	text := taskCapabilityText(task)
 	readOnly := hasAny(text, "不修改", "不改", "不写入", "不写文件", "只读", "只读取", "read-only", "do not modify", "do not write", "without modifying")
-	if !readOnly {
-		return required
-	}
-	needsExecution := hasAny(text, "go test", "npm test", "run test", "run tests", "shell.run", "execute command", "运行测试", "跑测试", "执行命令", "运行命令")
-	needsVerification := hasAny(text, "test pass", "tests pass", "验证", "验收", "确认通过", "测试通过", "跑测试")
+	noShell := hasAny(text, "不运行命令", "不执行命令", "不要运行命令", "不要执行命令", "不运行 shell", "不运行shell", "不要运行 shell", "不要运行shell", "no shell", "do not run shell", "do not run commands", "without running commands")
+	needsExecution := hasAny(text, "go test", "npm test", "npm run", "run test", "run tests", "shell.run", "execute command", "运行测试", "跑测试", "执行命令", "运行命令")
+	needsVerification := hasAny(text, "go test", "npm test", "npm run", "test pass", "tests pass", "测试通过", "跑测试", "git diff", "git status", "diff")
+	hasPassiveEvidence := containsCapability(required, "read") || containsCapability(required, "write") || containsCapability(required, "browser") || containsCapability(required, "create_artifact") || containsCapability(required, "inspect") || containsCapability(required, "inspect_changes")
 	var pruned []string
 	for _, capabilityName := range required {
 		switch strings.ToLower(strings.TrimSpace(capabilityName)) {
 		case "execute":
-			if needsExecution {
+			if needsExecution && !noShell {
 				pruned = append(pruned, capabilityName)
 			}
 		case "verify":
-			if needsVerification {
+			if needsVerification || (!readOnly && !noShell && !hasPassiveEvidence) {
 				pruned = append(pruned, capabilityName)
 			}
 		case "write", "create_artifact", "inspect_changes":
-			continue
+			if !readOnly {
+				pruned = append(pruned, capabilityName)
+			}
 		default:
 			pruned = append(pruned, capabilityName)
 		}
 	}
 	return textutil.SortedUniqueStrings(pruned)
+}
+
+func containsCapability(values []string, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	for _, value := range values {
+		if strings.ToLower(strings.TrimSpace(value)) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func taskCapabilityText(task domain.Task) string {

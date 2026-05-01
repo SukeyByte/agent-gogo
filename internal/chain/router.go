@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/SukeyByte/agent-gogo/internal/llmjson"
@@ -21,19 +22,21 @@ const (
 )
 
 type Decision struct {
-	Level       Level    `json:"level"`
-	Reason      string   `json:"reason"`
-	NeedPlan    bool     `json:"need_plan"`
-	NeedTools   bool     `json:"need_tools"`
-	NeedMemory  bool     `json:"need_memory"`
-	NeedReview  bool     `json:"need_review"`
-	NeedBrowser bool     `json:"need_browser"`
-	NeedCode    bool     `json:"need_code"`
-	NeedDocs    bool     `json:"need_docs"`
-	PersonaIDs  []string `json:"persona_ids"`
-	SkillTags   []string `json:"skill_tags"`
-	ToolNames   []string `json:"tool_names"`
-	RiskLevel   string   `json:"risk_level"`
+	Level          Level    `json:"level"`
+	Reason         string   `json:"reason"`
+	NeedPlan       bool     `json:"need_plan"`
+	NeedTools      bool     `json:"need_tools"`
+	NeedMemory     bool     `json:"need_memory"`
+	NeedReview     bool     `json:"need_review"`
+	NeedBrowser    bool     `json:"need_browser"`
+	NeedCode       bool     `json:"need_code"`
+	NeedDocs       bool     `json:"need_docs"`
+	RequiresDAG    bool     `json:"requires_dag"`
+	EstimatedSteps int      `json:"estimated_steps"`
+	PersonaIDs     []string `json:"persona_ids"`
+	SkillTags      []string `json:"skill_tags"`
+	ToolNames      []string `json:"tool_names"`
+	RiskLevel      string   `json:"risk_level"`
 }
 
 type Request struct {
@@ -85,6 +88,21 @@ func (r *LLMRouter) Route(ctx context.Context, req Request) (Decision, error) {
 }
 
 func normalizeDecision(decision Decision) Decision {
+	if isBrowserOnlyActionSequence(decision) && decision.Level == LevelProject {
+		decision.Level = LevelPlanned
+	}
+	if decision.RequiresDAG || (decision.EstimatedSteps >= 4 && !isBrowserOnlyActionSequence(decision)) {
+		decision.Level = LevelProject
+		decision.NeedPlan = true
+		decision.NeedTools = true
+		decision.NeedReview = true
+	}
+	if decision.Level == LevelProject {
+		decision.NeedPlan = true
+		if decision.EstimatedSteps < 4 {
+			decision.EstimatedSteps = 4
+		}
+	}
 	decision.PersonaIDs = sortedUnique(decision.PersonaIDs)
 	decision.SkillTags = sortedUnique(decision.SkillTags)
 	decision.ToolNames = sortedUnique(decision.ToolNames)
@@ -97,23 +115,25 @@ func decodeDecisionJSONObject(text string) (Decision, error) {
 	if err := decodeJSONObject(text, &wire); err != nil {
 		return Decision{}, err
 	}
-	return decisionFromWire(wire), nil
+	return normalizeDecision(decisionFromWire(wire)), nil
 }
 
 type routeDecisionWire struct {
-	Level       Level  `json:"level"`
-	Reason      string `json:"reason"`
-	NeedPlan    any    `json:"need_plan"`
-	NeedTools   any    `json:"need_tools"`
-	NeedMemory  any    `json:"need_memory"`
-	NeedReview  any    `json:"need_review"`
-	NeedBrowser any    `json:"need_browser"`
-	NeedCode    any    `json:"need_code"`
-	NeedDocs    any    `json:"need_docs"`
-	PersonaIDs  any    `json:"persona_ids"`
-	SkillTags   any    `json:"skill_tags"`
-	ToolNames   any    `json:"tool_names"`
-	RiskLevel   any    `json:"risk_level"`
+	Level          Level  `json:"level"`
+	Reason         string `json:"reason"`
+	NeedPlan       any    `json:"need_plan"`
+	NeedTools      any    `json:"need_tools"`
+	NeedMemory     any    `json:"need_memory"`
+	NeedReview     any    `json:"need_review"`
+	NeedBrowser    any    `json:"need_browser"`
+	NeedCode       any    `json:"need_code"`
+	NeedDocs       any    `json:"need_docs"`
+	RequiresDAG    any    `json:"requires_dag"`
+	EstimatedSteps any    `json:"estimated_steps"`
+	PersonaIDs     any    `json:"persona_ids"`
+	SkillTags      any    `json:"skill_tags"`
+	ToolNames      any    `json:"tool_names"`
+	RiskLevel      any    `json:"risk_level"`
 }
 
 func decisionFromWire(wire routeDecisionWire) Decision {
@@ -122,20 +142,33 @@ func decisionFromWire(wire routeDecisionWire) Decision {
 		toolNames = names
 	}
 	return Decision{
-		Level:       wire.Level,
-		Reason:      wire.Reason,
-		NeedPlan:    boolish(wire.NeedPlan),
-		NeedTools:   boolish(wire.NeedTools),
-		NeedMemory:  boolish(wire.NeedMemory),
-		NeedReview:  boolish(wire.NeedReview),
-		NeedBrowser: boolish(wire.NeedBrowser),
-		NeedCode:    boolish(wire.NeedCode),
-		NeedDocs:    boolish(wire.NeedDocs),
-		PersonaIDs:  stringList(wire.PersonaIDs),
-		SkillTags:   stringList(wire.SkillTags),
-		ToolNames:   toolNames,
-		RiskLevel:   riskLevelValue(wire.RiskLevel),
+		Level:          wire.Level,
+		Reason:         wire.Reason,
+		NeedPlan:       boolish(wire.NeedPlan),
+		NeedTools:      boolish(wire.NeedTools),
+		NeedMemory:     boolish(wire.NeedMemory),
+		NeedReview:     boolish(wire.NeedReview),
+		NeedBrowser:    boolish(wire.NeedBrowser),
+		NeedCode:       boolish(wire.NeedCode),
+		NeedDocs:       boolish(wire.NeedDocs),
+		RequiresDAG:    boolish(wire.RequiresDAG),
+		EstimatedSteps: intish(wire.EstimatedSteps),
+		PersonaIDs:     stringList(wire.PersonaIDs),
+		SkillTags:      stringList(wire.SkillTags),
+		ToolNames:      toolNames,
+		RiskLevel:      riskLevelValue(wire.RiskLevel),
 	}
+}
+
+func IsProjectScale(decision Decision) bool {
+	if isBrowserOnlyActionSequence(decision) {
+		return false
+	}
+	return decision.Level == LevelProject || decision.RequiresDAG || decision.EstimatedSteps >= 4
+}
+
+func isBrowserOnlyActionSequence(decision Decision) bool {
+	return decision.NeedBrowser && !decision.NeedCode && !decision.NeedDocs && !decision.RequiresDAG && decision.EstimatedSteps <= 6
 }
 
 func boolish(value any) bool {
@@ -157,6 +190,33 @@ func boolish(value any) bool {
 		return typed != 0
 	default:
 		return false
+	}
+}
+
+func intish(value any) int {
+	switch typed := value.(type) {
+	case int:
+		if typed < 0 {
+			return 0
+		}
+		return typed
+	case float64:
+		if typed < 0 {
+			return 0
+		}
+		return int(typed)
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" {
+			return 0
+		}
+		var parsed int
+		if _, err := fmt.Sscanf(text, "%d", &parsed); err == nil && parsed > 0 {
+			return parsed
+		}
+		return 0
+	default:
+		return 0
 	}
 }
 
@@ -210,20 +270,22 @@ func riskLevelValue(value any) string {
 var routeSystemPrompt = prompts.Text("chain_router")
 
 func routeDecisionSchema() map[string]any {
-	return objectSchema([]string{"level", "reason", "need_plan", "need_tools", "need_memory", "need_review", "need_browser", "need_code", "need_docs", "persona_ids", "skill_tags", "tool_names", "risk_level"}, map[string]any{
-		"level":        map[string]any{"type": "string", "enum": []string{"L0", "L1", "L2", "L3"}},
-		"reason":       map[string]any{"type": "string"},
-		"need_plan":    map[string]any{"type": "boolean"},
-		"need_tools":   map[string]any{"type": "boolean"},
-		"need_memory":  map[string]any{"type": "boolean"},
-		"need_review":  map[string]any{"type": "boolean"},
-		"need_browser": map[string]any{"type": "boolean"},
-		"need_code":    map[string]any{"type": "boolean"},
-		"need_docs":    map[string]any{"type": "boolean"},
-		"persona_ids":  arraySchema("string"),
-		"skill_tags":   arraySchema("string"),
-		"tool_names":   arraySchema("string"),
-		"risk_level":   map[string]any{"type": "string", "enum": []string{"low", "medium", "high", "critical"}},
+	return objectSchema([]string{"level", "reason", "need_plan", "need_tools", "need_memory", "need_review", "need_browser", "need_code", "need_docs", "requires_dag", "estimated_steps", "persona_ids", "skill_tags", "tool_names", "risk_level"}, map[string]any{
+		"level":           map[string]any{"type": "string", "enum": []string{"L0", "L1", "L2", "L3"}},
+		"reason":          map[string]any{"type": "string"},
+		"need_plan":       map[string]any{"type": "boolean"},
+		"need_tools":      map[string]any{"type": "boolean"},
+		"need_memory":     map[string]any{"type": "boolean"},
+		"need_review":     map[string]any{"type": "boolean"},
+		"need_browser":    map[string]any{"type": "boolean"},
+		"need_code":       map[string]any{"type": "boolean"},
+		"need_docs":       map[string]any{"type": "boolean"},
+		"requires_dag":    map[string]any{"type": "boolean"},
+		"estimated_steps": map[string]any{"type": "integer", "minimum": 0},
+		"persona_ids":     arraySchema("string"),
+		"skill_tags":      arraySchema("string"),
+		"tool_names":      arraySchema("string"),
+		"risk_level":      map[string]any{"type": "string", "enum": []string{"low", "medium", "high", "critical"}},
 	})
 }
 

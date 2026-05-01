@@ -84,3 +84,59 @@ func TestCapabilityTaskValidatorPrunesReadOnlyOverDeclaredCapabilities(t *testin
 		t.Fatalf("expected read-only task to ignore over-declared execute/verify, got %v", err)
 	}
 }
+
+func TestCapabilityTaskValidatorTreatsReadOnlyVerificationAsPassive(t *testing.T) {
+	registry := capability.NewRegistry(
+		capability.ToolSpec{Name: "file.read", RiskLevel: "low"},
+		capability.ToolSpec{Name: "test.run", RiskLevel: "medium", RequiresShell: true},
+	)
+	validator := NewCapabilityTaskValidator(NewMinimalTaskValidator(), registry, capability.Policy{AllowShell: false})
+	err := validator.ValidateTask(context.Background(), domain.Task{
+		ProjectID:            "project",
+		Title:                "只读验证仓库状态",
+		Description:          "只读取 README.md 并完成只读验证，不运行命令，不修改文件",
+		AcceptanceCriteria:   []string{"验证结果已说明"},
+		RequiredCapabilities: []string{"read", "verify"},
+	})
+	if err != nil {
+		t.Fatalf("expected passive read-only verification not to require test.run, got %v", err)
+	}
+}
+
+func TestCapabilityTaskValidatorPrunesNoShellWriteTaskExecute(t *testing.T) {
+	registry := capability.NewRegistry(
+		capability.ToolSpec{Name: "file.write", RiskLevel: "medium"},
+		capability.ToolSpec{Name: "file.read", RiskLevel: "low"},
+		capability.ToolSpec{Name: "test.run", RiskLevel: "medium", RequiresShell: true},
+		capability.ToolSpec{Name: "shell.run", RiskLevel: "medium", RequiresShell: true},
+	)
+	validator := NewCapabilityTaskValidator(NewMinimalTaskValidator(), registry, capability.Policy{AllowShell: false})
+	err := validator.ValidateTask(context.Background(), domain.Task{
+		ProjectID:            "project",
+		Title:                "创建静态网站文件",
+		Description:          "写入 index.html、styles.css、app.js，不运行 shell 命令",
+		AcceptanceCriteria:   []string{"三个文件已写入"},
+		RequiredCapabilities: []string{"write", "execute", "verify"},
+	})
+	if err != nil {
+		t.Fatalf("expected no-shell write task to ignore over-declared execute/verify, got %v", err)
+	}
+}
+
+func TestCapabilityTaskValidatorKeepsRealTestExecution(t *testing.T) {
+	registry := capability.NewRegistry(
+		capability.ToolSpec{Name: "file.write", RiskLevel: "medium"},
+		capability.ToolSpec{Name: "test.run", RiskLevel: "medium", RequiresShell: true},
+	)
+	validator := NewCapabilityTaskValidator(NewMinimalTaskValidator(), registry, capability.Policy{AllowShell: false})
+	err := validator.ValidateTask(context.Background(), domain.Task{
+		ProjectID:            "project",
+		Title:                "修改并跑测试",
+		Description:          "修改代码后运行 go test ./... 并确认 tests pass",
+		AcceptanceCriteria:   []string{"go test ./... passes"},
+		RequiredCapabilities: []string{"write", "execute", "verify"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "shell is disabled") {
+		t.Fatalf("expected real test execution to remain blocked by shell policy, got %v", err)
+	}
+}

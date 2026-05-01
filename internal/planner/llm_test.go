@@ -109,7 +109,90 @@ func TestEnsureResearchAndReflectionPreservesResearchBeforeReflection(t *testing
 	}
 }
 
-func TestLLMPlannerSplitsL3UmbrellaTask(t *testing.T) {
+func TestEnsureResearchAndReflectionSkipsSimpleBrowserRead(t *testing.T) {
+	out := ensureResearchAndReflectionTasks(PlanRequest{
+		Project: domain.Project{Goal: "只打开 https://example.com 并总结，不修改文件"},
+		ChainDecision: chain.Decision{
+			Level:          chain.LevelAssist,
+			NeedBrowser:    true,
+			EstimatedSteps: 2,
+		},
+		IntentProfile: intent.Profile{
+			TaskType:   "browser",
+			Complexity: "simple",
+		},
+	}, []plannedTask{
+		{
+			Title:                "打开页面并总结",
+			Goal:                 "打开 https://example.com 并总结页面内容",
+			Type:                 "browser",
+			Acceptance:           []string{"页面已总结"},
+			RequiredCapabilities: []string{"browser"},
+		},
+	})
+	if len(out) != 1 {
+		t.Fatalf("expected simple browser read to avoid injected reflection task, got %#v", out)
+	}
+	if out[0].Title != "打开页面并总结" {
+		t.Fatalf("unexpected task %q", out[0].Title)
+	}
+}
+
+func TestEnsureResearchAndReflectionSkipsDirectBrowserInteraction(t *testing.T) {
+	out := ensureResearchAndReflectionTasks(PlanRequest{
+		Project: domain.Project{Goal: "打开 http://127.0.0.1:18766/index.html，在 Message 输入框输入 hello-browser，点击 Go，等待 done:hello-browser"},
+		ChainDecision: chain.Decision{
+			Level:          chain.LevelAssist,
+			NeedBrowser:    true,
+			EstimatedSteps: 4,
+		},
+		IntentProfile: intent.Profile{
+			TaskType:   "browser",
+			Complexity: "simple",
+		},
+	}, []plannedTask{
+		{
+			Title:                "完成浏览器交互并验证结果",
+			Goal:                 "输入 hello-browser，点击 Go，并等待 done:hello-browser 出现",
+			Type:                 "browser",
+			Acceptance:           []string{"页面出现 done:hello-browser"},
+			RequiredCapabilities: []string{"browser"},
+		},
+	})
+	if len(out) != 1 {
+		t.Fatalf("expected direct browser interaction to avoid injected research/reflection tasks, got %#v", out)
+	}
+}
+
+func TestPruneResearchAndReflectionForSimpleBrowserRead(t *testing.T) {
+	out := pruneResearchAndReflectionForSimpleBrowser(PlanRequest{
+		Project: domain.Project{Goal: "只打开 https://example.com 并总结，不修改文件"},
+		ChainDecision: chain.Decision{
+			Level:          chain.LevelAssist,
+			NeedBrowser:    true,
+			EstimatedSteps: 1,
+		},
+		IntentProfile: intent.Profile{
+			TaskType:   "browser",
+			Complexity: "simple",
+		},
+	}, []plannedTask{
+		{Title: "研究上下文与可用资料", Goal: "研究", Type: "runtime", Acceptance: []string{"研究完成"}},
+		{Title: "反思任务拆解与验收口径", Goal: "反思", Type: "general", DependsOn: []string{"研究上下文与可用资料"}, Acceptance: []string{"反思完成"}},
+		{Title: "打开页面并总结", Goal: "打开 https://example.com 并总结页面内容", Type: "browser", DependsOn: []string{"反思任务拆解与验收口径"}, Acceptance: []string{"页面已总结"}},
+	})
+	if len(out) != 1 {
+		t.Fatalf("expected only concrete browser task, got %#v", out)
+	}
+	if out[0].Title != "打开页面并总结" {
+		t.Fatalf("unexpected task %q", out[0].Title)
+	}
+	if len(out[0].DependsOn) != 0 {
+		t.Fatalf("expected removed dependencies, got %#v", out[0].DependsOn)
+	}
+}
+
+func TestLLMPlannerSplitsProjectScaleUmbrellaTask(t *testing.T) {
 	llm := provider.ChatFunc(func(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
 		return provider.ChatResponse{
 			Model: req.Model,
@@ -118,7 +201,7 @@ func TestLLMPlannerSplitsL3UmbrellaTask(t *testing.T) {
 				"tasks":[
 					{
 						"phase":"完整实现",
-						"title":"完成整个传奇任务",
+						"title":"完成整个通用 agent 改造",
 						"goal":"一次性完成所有事情",
 						"description":"这是一个过大的伞状任务",
 						"type":"general",
@@ -132,9 +215,11 @@ func TestLLMPlannerSplitsL3UmbrellaTask(t *testing.T) {
 	})
 	planner := NewLLMPlanner(llm, "gpt-test")
 	tasks, err := planner.PlanProject(context.Background(), PlanRequest{
-		Project: domain.Project{ID: "project-legendary", Name: "agent-gogo", Goal: "完成一个传奇级复杂任务"},
+		Project: domain.Project{ID: "project-scale", Name: "agent-gogo", Goal: "把 runtime、web console、capability、observer 和 memory 收敛成通用 agent"},
 		ChainDecision: chain.Decision{
-			Level: chain.LevelProject,
+			Level:          chain.LevelPlanned,
+			RequiresDAG:    true,
+			EstimatedSteps: 6,
 		},
 		IntentProfile: intent.Profile{
 			TaskType:   "general",
@@ -145,7 +230,7 @@ func TestLLMPlannerSplitsL3UmbrellaTask(t *testing.T) {
 		t.Fatalf("plan: %v", err)
 	}
 	if len(tasks) < 4 {
-		t.Fatalf("expected L3 umbrella task to be expanded to at least 4 tasks, got %d: %#v", len(tasks), tasks)
+		t.Fatalf("expected project-scale umbrella task to be expanded to at least 4 tasks, got %d: %#v", len(tasks), tasks)
 	}
 	if tasks[len(tasks)-1].Title != "汇总执行状态与结果" {
 		t.Fatalf("expected final channel result task, got %q", tasks[len(tasks)-1].Title)

@@ -318,10 +318,17 @@ func (s *Service) PlanProject(ctx context.Context, projectID string) ([]domain.T
 	}
 
 	readyTasks := make([]domain.Task, 0, len(planned))
+	validationErrors := make([]string, 0)
 	for _, item := range planned {
 		created := item.created
 		if err := s.validator.ValidateTask(ctx, created); err != nil {
-			return nil, err
+			blocked, transitionErr := s.store.TransitionTask(ctx, created.ID, domain.TaskStatusBlocked, "capability validation blocked planned task: "+err.Error())
+			if transitionErr != nil {
+				return nil, transitionErr
+			}
+			s.emitTaskBlocked(ctx, project.ID, blocked, "Task blocked by capability validation: "+created.Title+" - "+err.Error())
+			validationErrors = append(validationErrors, fmt.Sprintf("%s: %s", created.Title, err.Error()))
+			continue
 		}
 		ready, err := s.store.TransitionTask(ctx, created.ID, domain.TaskStatusReady, "validator accepted planned task")
 		if err != nil {
@@ -331,6 +338,18 @@ func (s *Service) PlanProject(ctx context.Context, projectID string) ([]domain.T
 	}
 	if err := s.emit(ctx, comm.NewMessageIntent(s.communicationChannel, fmt.Sprintf("Planned %d task(s)", len(readyTasks))), project.ID); err != nil {
 		return nil, err
+	}
+	if len(validationErrors) > 0 {
+		if err := s.emit(ctx, comm.NewBlockedIntent(s.communicationChannel, fmt.Sprintf("Blocked %d planned task(s) by capability policy", len(validationErrors)), map[string]any{
+			"project_id": project.ID,
+			"status":     string(domain.TaskStatusBlocked),
+			"errors":     validationErrors,
+		}), project.ID); err != nil {
+			return nil, err
+		}
+		if len(readyTasks) == 0 {
+			return nil, fmt.Errorf("no runnable tasks after capability validation: %s", strings.Join(validationErrors, "; "))
+		}
 	}
 	s.saveSessionContext(ctx, project.ID)
 	return readyTasks, nil
@@ -495,6 +514,17 @@ func (s *Service) RunProjectTasks(ctx context.Context, projectID string, maxTask
 	for ranTasks < maxTasks {
 		result, err := s.RunNextTask(ctx, projectID)
 		if errors.Is(err, sql.ErrNoRows) {
+			if blocked, blockErr := s.blockTasksWaitingOnBlockedDependencies(ctx, projectID); blockErr != nil {
+				return ranTasks, blockErr
+			} else if blocked > 0 {
+				continue
+			}
+			if summary, incomplete, summaryErr := s.projectIncompleteSummary(ctx, projectID); summaryErr != nil {
+				return ranTasks, summaryErr
+			} else if incomplete {
+				s.emitProjectBlocked(ctx, projectID, fmt.Sprintf("Project run paused after %d task(s): %s", ranTasks, summary))
+				return ranTasks, nil
+			}
 			if err := s.emit(ctx, comm.NewDoneIntent(s.communicationChannel, fmt.Sprintf("Project run finished: %d task(s) completed", ranTasks)), projectID); err != nil {
 				return ranTasks, err
 			}
@@ -512,6 +542,99 @@ func (s *Service) RunProjectTasks(ctx context.Context, projectID string, maxTask
 	err := fmt.Errorf("max task limit reached: %d", maxTasks)
 	s.emitProjectBlocked(ctx, projectID, err.Error())
 	return ranTasks, err
+}
+
+func (s *Service) blockTasksWaitingOnBlockedDependencies(ctx context.Context, projectID string) (int, error) {
+	tasks, err := s.store.ListTasksByProject(ctx, projectID)
+	if err != nil {
+		return 0, err
+	}
+	dependencies, err := s.store.ListTaskDependenciesByProject(ctx, projectID)
+	if err != nil {
+		return 0, err
+	}
+	statusByID := make(map[string]domain.TaskStatus, len(tasks))
+	taskByID := make(map[string]domain.Task, len(tasks))
+	for _, task := range tasks {
+		statusByID[task.ID] = task.Status
+		taskByID[task.ID] = task
+	}
+	dependencyTitles := map[string][]string{}
+	for _, dependency := range dependencies {
+		if !dependencyBlocksDependents(statusByID[dependency.DependsOnTaskID]) {
+			continue
+		}
+		if blockedDependency, ok := taskByID[dependency.DependsOnTaskID]; ok {
+			dependencyTitles[dependency.TaskID] = append(dependencyTitles[dependency.TaskID], blockedDependency.Title)
+		} else {
+			dependencyTitles[dependency.TaskID] = append(dependencyTitles[dependency.TaskID], dependency.DependsOnTaskID)
+		}
+	}
+	blocked := 0
+	for _, task := range tasks {
+		if task.Status != domain.TaskStatusReady && task.Status != domain.TaskStatusDraft {
+			continue
+		}
+		titles := dependencyTitles[task.ID]
+		if len(titles) == 0 {
+			continue
+		}
+		reason := "blocked dependency cannot complete: " + strings.Join(titles, ", ")
+		updated, err := s.store.TransitionTask(ctx, task.ID, domain.TaskStatusBlocked, reason)
+		if err != nil {
+			return blocked, err
+		}
+		s.emitTaskBlocked(ctx, projectID, updated, "Task blocked by dependency: "+task.Title+" - "+reason)
+		blocked++
+	}
+	return blocked, nil
+}
+
+func dependencyBlocksDependents(status domain.TaskStatus) bool {
+	switch status {
+	case domain.TaskStatusBlocked, domain.TaskStatusNeedUserInput, domain.TaskStatusFailed, domain.TaskStatusReviewFailed, domain.TaskStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) projectIncompleteSummary(ctx context.Context, projectID string) (string, bool, error) {
+	tasks, err := s.store.ListTasksByProject(ctx, projectID)
+	if err != nil {
+		return "", false, err
+	}
+	counts := map[domain.TaskStatus]int{}
+	incomplete := 0
+	for _, task := range tasks {
+		if task.Status == domain.TaskStatusDone || task.Status == domain.TaskStatusCancelled {
+			continue
+		}
+		incomplete++
+		counts[task.Status]++
+	}
+	if incomplete == 0 {
+		return "", false, nil
+	}
+	order := []domain.TaskStatus{
+		domain.TaskStatusDraft,
+		domain.TaskStatusReady,
+		domain.TaskStatusInProgress,
+		domain.TaskStatusImplemented,
+		domain.TaskStatusTesting,
+		domain.TaskStatusReviewing,
+		domain.TaskStatusBlocked,
+		domain.TaskStatusNeedUserInput,
+		domain.TaskStatusReviewFailed,
+		domain.TaskStatusFailed,
+	}
+	parts := make([]string, 0, len(counts))
+	for _, status := range order {
+		if count := counts[status]; count > 0 {
+			parts = append(parts, fmt.Sprintf("%s=%d", status, count))
+		}
+	}
+	return fmt.Sprintf("%d incomplete task(s) remain (%s)", incomplete, strings.Join(parts, ", ")), true, nil
 }
 
 func (s *Service) RetryTask(ctx context.Context, taskID string) error {
@@ -578,7 +701,8 @@ func (s *Service) HandleChannelEvent(ctx context.Context, event ChannelEvent) er
 			return err
 		}
 		if _, err = s.PlanProject(ctx, project.ID); err != nil {
-			return err
+			s.emitProjectBlocked(ctx, project.ID, "Project blocked during planning: "+err.Error())
+			return nil
 		}
 		go s.runProjectTasksInBackground(project.ID)
 		return nil
@@ -787,7 +911,7 @@ func (s *Service) emitTaskBlocked(ctx context.Context, projectID string, task do
 		"project_id": projectID,
 		"task_id":    task.ID,
 		"task_title": task.Title,
-		"status":     string(domain.TaskStatusFailed),
+		"status":     string(domain.TaskStatusBlocked),
 	}), projectID)
 }
 

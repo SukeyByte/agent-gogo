@@ -18,7 +18,7 @@ browser:
   debug_port: 9223
   chrome_path: ""
   user_data_dir: ""
-  headless: true
+  headless: false
   timeout: 60
   max_summary_length: 12000
 

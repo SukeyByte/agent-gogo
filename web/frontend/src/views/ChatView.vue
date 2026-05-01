@@ -10,6 +10,24 @@ const sending = ref(false)
 const messagesEl = ref<HTMLElement>()
 let eventSource: EventSource | null = null
 
+function pushSSEMessage(e: MessageEvent, role: ChatMessage['role'], fallback: string) {
+  try {
+    const data = JSON.parse(e.data)
+    const payload = data.payload || {}
+    messages.value.push({
+      id: data.id || `msg-${Date.now()}`,
+      session_id: sessionId.value,
+      project_id: data.project_id || payload.project_id || '',
+      role,
+      content: data.text || data.message || payload.text || fallback,
+      artifacts: [],
+      metadata: { ...payload, ...data },
+      created_at: new Date().toISOString(),
+    })
+    nextTick(scrollToBottom)
+  } catch { /* ignore malformed SSE */ }
+}
+
 onMounted(async () => {
   messages.value = await api.listChatMessages(sessionId.value)
   await nextTick()
@@ -18,48 +36,29 @@ onMounted(async () => {
   // Connect SSE for real-time responses
   eventSource = createEventSource()
   eventSource.addEventListener('message', (e) => {
-    try {
-      const data = JSON.parse(e.data)
-      messages.value.push({
-        id: data.id || `msg-${Date.now()}`,
-        session_id: sessionId.value,
-        project_id: data.project_id || '',
-        role: 'assistant',
-        content: data.text || data.content || JSON.stringify(data),
-        artifacts: [],
-        metadata: data,
-        created_at: new Date().toISOString(),
-      })
-      nextTick(scrollToBottom)
-    } catch { /* ignore malformed SSE */ }
+    pushSSEMessage(e, 'assistant', 'Message received')
+  })
+  eventSource.addEventListener('progress', (e) => {
+    pushSSEMessage(e, 'assistant', 'Progress update')
   })
   eventSource.addEventListener('done', (e) => {
-    try {
-      const data = JSON.parse(e.data)
-      messages.value.push({
-        id: data.id || `msg-${Date.now()}`,
-        session_id: sessionId.value,
-        project_id: data.project_id || '',
-        role: 'system',
-        content: data.text || data.message || 'Task completed',
-        artifacts: [],
-        metadata: data,
-        created_at: new Date().toISOString(),
-      })
-      nextTick(scrollToBottom)
-    } catch { /* ignore */ }
+    pushSSEMessage(e, 'system', 'Task completed')
+  })
+  eventSource.addEventListener('blocked', (e) => {
+    pushSSEMessage(e, 'system', 'Blocked')
   })
   eventSource.addEventListener('confirmation', (e) => {
     try {
       const data = JSON.parse(e.data)
+      const payload = data.payload || {}
       messages.value.push({
         id: data.id || `msg-${Date.now()}`,
         session_id: sessionId.value,
-        project_id: data.project_id || '',
+        project_id: data.project_id || payload.project_id || '',
         role: 'system',
-        content: `Confirmation needed: ${data.text || data.message || ''}`,
+        content: `Confirmation needed: ${data.text || data.message || payload.text || ''}`,
         artifacts: [],
-        metadata: { ...data, requires_confirmation: true },
+        metadata: { ...payload, ...data, requires_confirmation: true },
         created_at: new Date().toISOString(),
       })
       nextTick(scrollToBottom)
