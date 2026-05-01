@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -396,6 +397,9 @@ func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunRes
 	if err := s.log(ctx, "scheduler.ready", task); err != nil {
 		return TaskRunResult{}, err
 	}
+	if err := s.emitTaskProgress(ctx, projectID, task, domain.TaskStatusInProgress, "Task started: "+task.Title); err != nil {
+		return TaskRunResult{}, err
+	}
 	project, err := s.store.GetProject(ctx, projectID)
 	if err != nil {
 		return TaskRunResult{}, err
@@ -419,22 +423,34 @@ func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunRes
 		if errors.As(err, &executionErr) && executionErr.Attempt.ID != "" {
 			_ = s.createRepairTask(ctx, projectID, executionErr.Task, executionErr.Attempt, "executor.failed", err)
 		}
+		s.emitTaskBlocked(ctx, projectID, task, "Task failed during execution: "+err.Error())
 		return TaskRunResult{}, err
 	}
 	if err := s.log(ctx, "executor.result", executed); err != nil {
 		return TaskRunResult{}, err
 	}
+	if err := s.emitTaskProgress(ctx, projectID, executed.Task, domain.TaskStatusImplemented, "Task implemented: "+executed.Task.Title); err != nil {
+		return TaskRunResult{}, err
+	}
+	if err := s.emitTaskProgress(ctx, projectID, executed.Task, domain.TaskStatusTesting, "Task testing: "+executed.Task.Title); err != nil {
+		return TaskRunResult{}, err
+	}
 	tested, err := s.tester.Test(ctx, executed.Task, executed.Attempt)
 	if err != nil {
 		_ = s.createRepairTask(ctx, projectID, executed.Task, executed.Attempt, "tester.failed", err)
+		s.emitTaskBlocked(ctx, projectID, executed.Task, "Task failed during testing: "+err.Error())
 		return TaskRunResult{}, err
 	}
 	if err := s.log(ctx, "tester.result", tested); err != nil {
 		return TaskRunResult{}, err
 	}
+	if err := s.emitTaskProgress(ctx, projectID, tested.Task, domain.TaskStatusReviewing, "Task reviewing: "+tested.Task.Title); err != nil {
+		return TaskRunResult{}, err
+	}
 	reviewed, err := s.reviewer.Review(ctx, tested.Task, executed.Attempt)
 	if err != nil {
 		_ = s.createRepairTask(ctx, projectID, tested.Task, executed.Attempt, "reviewer.rejected", err)
+		s.emitTaskBlocked(ctx, projectID, tested.Task, "Task failed during review: "+err.Error())
 		return TaskRunResult{}, err
 	}
 	if err := s.log(ctx, "reviewer.result", reviewed); err != nil {
@@ -460,6 +476,42 @@ func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunRes
 	}
 	s.saveSessionContext(ctx, projectID)
 	return result, nil
+}
+
+func (s *Service) RunProjectTasks(ctx context.Context, projectID string, maxTasks int) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if maxTasks <= 0 {
+		maxTasks = 50
+	}
+	if err := s.emit(ctx, comm.NewProgressIntent(s.communicationChannel, "Project run started", map[string]any{
+		"project_id": projectID,
+		"status":     "RUNNING",
+	}), projectID); err != nil {
+		return 0, err
+	}
+	ranTasks := 0
+	for ranTasks < maxTasks {
+		result, err := s.RunNextTask(ctx, projectID)
+		if errors.Is(err, sql.ErrNoRows) {
+			if err := s.emit(ctx, comm.NewDoneIntent(s.communicationChannel, fmt.Sprintf("Project run finished: %d task(s) completed", ranTasks)), projectID); err != nil {
+				return ranTasks, err
+			}
+			return ranTasks, nil
+		}
+		if err != nil {
+			s.emitProjectBlocked(ctx, projectID, fmt.Sprintf("Project run stopped after %d task(s): %s", ranTasks, err.Error()))
+			return ranTasks, err
+		}
+		ranTasks++
+		if result.Task.Status == domain.TaskStatusDone {
+			continue
+		}
+	}
+	err := fmt.Errorf("max task limit reached: %d", maxTasks)
+	s.emitProjectBlocked(ctx, projectID, err.Error())
+	return ranTasks, err
 }
 
 func (s *Service) RetryTask(ctx context.Context, taskID string) error {
@@ -525,14 +577,26 @@ func (s *Service) HandleChannelEvent(ctx context.Context, event ChannelEvent) er
 		if err != nil {
 			return err
 		}
-		_, err = s.PlanProject(ctx, project.ID)
-		return err
+		if _, err = s.PlanProject(ctx, project.ID); err != nil {
+			return err
+		}
+		go s.runProjectTasksInBackground(project.ID)
+		return nil
 	case "task.retry":
 		return s.RetryTask(ctx, event.TaskID)
 	case "project.replan":
 		return s.ReplanProject(ctx, event.ProjectID, event.Text)
 	default:
 		return s.log(ctx, "runtime.channel_event", event)
+	}
+}
+
+func (s *Service) runProjectTasksInBackground(projectID string) {
+	if _, err := s.RunProjectTasks(context.Background(), projectID, 0); err != nil {
+		_ = s.log(context.Background(), "runtime.project_run_failed", map[string]string{
+			"project_id": projectID,
+			"error":      err.Error(),
+		})
 	}
 }
 
@@ -707,6 +771,31 @@ func (s *Service) saveSessionContext(ctx context.Context, projectID string) {
 		return
 	}
 	s.log(ctx, "session.context_saved", map[string]any{"session_id": s.sessionID, "project_id": projectID})
+}
+
+func (s *Service) emitTaskProgress(ctx context.Context, projectID string, task domain.Task, status domain.TaskStatus, text string) error {
+	return s.emit(ctx, comm.NewProgressIntent(s.communicationChannel, text, map[string]any{
+		"project_id": projectID,
+		"task_id":    task.ID,
+		"task_title": task.Title,
+		"status":     string(status),
+	}), projectID)
+}
+
+func (s *Service) emitTaskBlocked(ctx context.Context, projectID string, task domain.Task, text string) {
+	_ = s.emit(ctx, comm.NewBlockedIntent(s.communicationChannel, text, map[string]any{
+		"project_id": projectID,
+		"task_id":    task.ID,
+		"task_title": task.Title,
+		"status":     string(domain.TaskStatusFailed),
+	}), projectID)
+}
+
+func (s *Service) emitProjectBlocked(ctx context.Context, projectID string, text string) {
+	_ = s.emit(ctx, comm.NewBlockedIntent(s.communicationChannel, text, map[string]any{
+		"project_id": projectID,
+		"status":     string(domain.TaskStatusBlocked),
+	}), projectID)
 }
 
 func (s *Service) emit(ctx context.Context, intent comm.CommunicationIntent, projectID string) error {

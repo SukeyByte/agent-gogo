@@ -55,3 +55,17 @@ func TestRegistryMapsCapabilityToTools(t *testing.T) {
 		t.Fatalf("expected file.write, got %s", tools[0].Name)
 	}
 }
+
+func TestRegistryNormalizesSemanticReadCapabilities(t *testing.T) {
+	registry := NewRegistry(ToolSpec{Name: "file.read", RiskLevel: "low"})
+	availability, err := registry.CheckAvailability(context.Background(), AvailabilityRequest{
+		RequiredCapabilities: []string{"document-understanding", "summarization"},
+		Policy:               Policy{},
+	})
+	if err != nil {
+		t.Fatalf("check availability: %v", err)
+	}
+	if !availability.Available {
+		t.Fatalf("expected semantic read aliases to be available, missing=%v blocked=%v", availability.MissingCapabilities, availability.BlockedCapabilities)
+	}
+}

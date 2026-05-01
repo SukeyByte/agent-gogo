@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/SukeyByte/agent-gogo/internal/channels/webconsole"
 	"github.com/SukeyByte/agent-gogo/internal/communication"
 	appconfig "github.com/SukeyByte/agent-gogo/internal/config"
 	"github.com/SukeyByte/agent-gogo/internal/contextbuilder"
@@ -33,7 +34,6 @@ import (
 	"github.com/SukeyByte/agent-gogo/internal/tester"
 	"github.com/SukeyByte/agent-gogo/internal/tools"
 	"github.com/SukeyByte/agent-gogo/internal/validator"
-	webhandlers "github.com/SukeyByte/agent-gogo/web/handlers"
 )
 
 func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Writer) error {
@@ -60,27 +60,32 @@ func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Wri
 		sessionID = "local"
 	}
 
-	hub := webhandlers.NewSSEHub(50)
+	hub := webconsole.NewSSEHub(50)
 
 	assets, assetErr := loadWebAssets(ctx, cfg)
 	if assetErr != nil {
 		_, _ = fmt.Fprintf(writer, "Warning: asset discovery failed (%v), management APIs may be partial\n", assetErr)
 	}
 
-	var sender webhandlers.ChannelEventSender
+	var sender webconsole.ChannelEventSender
+	var bridge *runtimeServiceBridge
 	llm, llmErr := newLLMProvider(cfg)
 	if llmErr == nil {
-		sender, err = initWebRuntime(ctx, cfg, sqlite, llm, hub, channelID, sessionID, assets)
+		bridge, err = initWebRuntime(ctx, cfg, sqlite, llm, hub, channelID, sessionID, assets)
 		if err != nil {
 			_, _ = fmt.Fprintf(writer, "Warning: runtime init failed (%v), running in read-only mode\n", err)
 			sender = nil
+			bridge = nil
+		} else {
+			sender = bridge
+			defer bridge.Close()
 		}
 	} else {
 		_, _ = fmt.Fprintf(writer, "Warning: LLM provider not configured (%v), running in read-only mode\n", llmErr)
 	}
 
 	distDir := findDistDir()
-	apiServer := webhandlers.NewAPIServer(sqlite, sender, hub, webhandlers.ConfigView{
+	apiServer := webconsole.NewAPIServer(sqlite, sender, hub, webconsole.ConfigView{
 		WorkspacePath:          cfg.Storage.WorkspacePath,
 		SQLitePath:             cfg.Storage.SQLitePath,
 		ArtifactPath:           cfg.Storage.ArtifactPath,
@@ -144,12 +149,12 @@ func loadWebAssets(ctx context.Context, cfg appconfig.Config) (webAssets, error)
 	return out, nil
 }
 
-func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQLiteStore, llm provider.LLMProvider, hub *webhandlers.SSEHub, channelID, sessionID string, assets webAssets) (*runtimeServiceBridge, error) {
+func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQLiteStore, llm provider.LLMProvider, hub *webconsole.SSEHub, channelID, sessionID string, assets webAssets) (*runtimeServiceBridge, error) {
 	logger := observability.NoopLogger{}
 	loggedLLM := observability.NewLoggingLLMProvider(llm, logger)
 
 	commRuntime := communication.NewRuntime(communication.NewMemoryOutbox(), communication.NewRenderer())
-	commRuntime.RegisterChannel(channelID, webhandlers.NewWebConsoleAdapter(channelID, hub))
+	commRuntime.RegisterChannel(channelID, webconsole.NewWebConsoleAdapter(channelID, hub))
 
 	toolRuntime := tools.NewBuiltinRuntime(sqlite, cfg.Storage.WorkspacePath)
 	toolRuntime.UseLogger(logger)
@@ -159,6 +164,8 @@ func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQL
 		RequireConfirmationAtRisk: confirmationRisk(cfg),
 	}
 	toolRuntime.UseSecurityPolicy(policy, tools.AutoConfirmationGate{})
+	browserEngine := newLazyBrowserEngine(cfg)
+	toolRuntime.RegisterBrowserTools(browserEngine)
 
 	if assets.skills == nil || assets.personas == nil || assets.memories == nil {
 		loaded, err := loadWebAssets(ctx, cfg)
@@ -190,24 +197,35 @@ func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQL
 	service.UseContextAssets(function.NewCatalogRegistry(), assets.skills, assets.personas, assets.memories, contextbuilder.NewSerializer(contextbuilder.SerializerOptions{}), logger)
 	service.UseContextBudget(cfg.Runtime.ContextMaxChars)
 	service.UseMemoryPersistence(assets.path)
-	service.UseDiscoveryLoop(discovery.NewToolLoop(tools.NewBuiltinRuntime(nil, cfg.Storage.WorkspacePath)).UseMemory(assets.memories))
+	discoveryRuntime := tools.NewBuiltinRuntime(nil, cfg.Storage.WorkspacePath)
+	discoveryRuntime.RegisterBrowserTools(browserEngine)
+	service.UseDiscoveryLoop(discovery.NewToolLoop(discoveryRuntime).UseMemory(assets.memories))
 
 	return &runtimeServiceBridge{
-		service:     service,
-		sessions:    sessionSvc,
-		toolRuntime: toolRuntime,
-		policy:      policy,
+		service:       service,
+		sessions:      sessionSvc,
+		toolRuntime:   toolRuntime,
+		policy:        policy,
+		browserCloser: browserEngine.Close,
 	}, nil
 }
 
 type runtimeServiceBridge struct {
-	service     *appruntime.Service
-	sessions    *session.Service
-	toolRuntime *tools.Runtime
-	policy      tools.SecurityPolicy
+	service       *appruntime.Service
+	sessions      *session.Service
+	toolRuntime   *tools.Runtime
+	policy        tools.SecurityPolicy
+	browserCloser func() error
 }
 
-func (b *runtimeServiceBridge) HandleChannelEvent(ctx context.Context, event webhandlers.InboundEvent) error {
+func (b *runtimeServiceBridge) Close() error {
+	if b == nil || b.browserCloser == nil {
+		return nil
+	}
+	return b.browserCloser()
+}
+
+func (b *runtimeServiceBridge) HandleChannelEvent(ctx context.Context, event webconsole.InboundEvent) error {
 	switch strings.TrimSpace(event.Type) {
 	case "config.update":
 		return b.updateRuntimeConfig(ctx, event.Payload)
@@ -226,7 +244,7 @@ func (b *runtimeServiceBridge) HandleChannelEvent(ctx context.Context, event web
 	}
 }
 
-func (b *runtimeServiceBridge) HandleUserConfirmation(ctx context.Context, confirmation webhandlers.InboundConfirmation) error {
+func (b *runtimeServiceBridge) HandleUserConfirmation(ctx context.Context, confirmation webconsole.InboundConfirmation) error {
 	return b.service.HandleUserConfirmation(ctx, appruntime.UserConfirmation{
 		ConfirmationID: confirmation.ConfirmationID,
 		ProjectID:      confirmation.ProjectID,

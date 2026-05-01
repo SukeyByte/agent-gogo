@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SukeyByte/agent-gogo/internal/communication"
 	"github.com/SukeyByte/agent-gogo/internal/contextbuilder"
@@ -122,19 +123,92 @@ func TestServiceEmitsCommunicationIntents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list outbox: %v", err)
 	}
-	if len(records) != 3 {
-		t.Fatalf("expected 3 communication records, got %d", len(records))
+	if len(records) != 7 {
+		t.Fatalf("expected 7 communication records, got %d", len(records))
 	}
-	if records[2].Intent.Type != communication.IntentNotifyDone {
-		t.Fatalf("expected notify_done intent, got %s", records[2].Intent.Type)
+	if records[len(records)-1].Intent.Type != communication.IntentNotifyDone {
+		t.Fatalf("expected notify_done intent, got %s", records[len(records)-1].Intent.Type)
 	}
 	messages := web.Messages()
-	if len(messages) != 3 {
-		t.Fatalf("expected 3 web messages, got %d", len(messages))
+	if len(messages) != 7 {
+		t.Fatalf("expected 7 web messages, got %d", len(messages))
 	}
-	if messages[2].Type != communication.IntentNotifyDone {
-		t.Fatalf("expected web notify_done message, got %s", messages[2].Type)
+	if messages[len(messages)-1].Type != communication.IntentNotifyDone {
+		t.Fatalf("expected web notify_done message, got %s", messages[len(messages)-1].Type)
 	}
+	seenProgress := false
+	for _, record := range records {
+		if record.Intent.Type == communication.IntentSendProgress {
+			seenProgress = true
+		}
+	}
+	if !seenProgress {
+		t.Fatal("expected progress notifications during task lifecycle")
+	}
+}
+
+func TestHandleChannelEventAutoRunsProjectAndEmitsResult(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	outbox := communication.NewMemoryOutbox()
+	commRuntime := communication.NewRuntime(outbox, communication.NewRenderer())
+	web := communication.NewWebConsoleAdapter("web")
+	commRuntime.RegisterChannel("web", web)
+
+	service := NewServiceWithComponents(
+		sqlite,
+		dependencyPlanner{},
+		validator.NewMinimalTaskValidator(),
+		scheduler.NewReadyScheduler(sqlite),
+		executor.NewMinimalExecutor(sqlite),
+		tester.NewMinimalTester(sqlite),
+		reviewer.NewMinimalReviewer(sqlite),
+	)
+	service.UseCommunication("web", "session-1", commRuntime)
+
+	if err := service.HandleChannelEvent(ctx, ChannelEvent{
+		Type: "goal.submitted",
+		Text: "完成一个传奇任务并汇报结果",
+		Payload: map[string]string{
+			"name": "Legendary goal",
+		},
+	}); err != nil {
+		t.Fatalf("handle channel event: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var records []communication.OutboxRecord
+	for time.Now().Before(deadline) {
+		records, err = outbox.List(ctx)
+		if err != nil {
+			t.Fatalf("list outbox: %v", err)
+		}
+		for _, record := range records {
+			if record.Intent.Type == communication.IntentNotifyDone && strings.Contains(record.Rendered.Text, "Project run finished") {
+				projects, err := sqlite.ListProjects(ctx)
+				if err != nil {
+					t.Fatalf("list projects: %v", err)
+				}
+				tasks, err := sqlite.ListTasksByProject(ctx, projects[0].ID)
+				if err != nil {
+					t.Fatalf("list tasks: %v", err)
+				}
+				for _, task := range tasks {
+					if task.Status != domain.TaskStatusDone {
+						t.Fatalf("expected all channel-run tasks done, got %#v", tasks)
+					}
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected project done notification, got %#v", records)
 }
 
 func TestServicePersistsPlannerDependenciesAndSchedulerHonorsDAG(t *testing.T) {

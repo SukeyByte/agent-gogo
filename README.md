@@ -96,13 +96,13 @@ internal/browser/        Browser automation runtime
 internal/capability/     Capability registry and checks
 internal/codeindex/      Repository map and symbol index
 internal/communication/  Channel-agnostic communication layer
+internal/channels/       Concrete channel adapters and console APIs
 internal/config/         Configuration loading
 internal/provider/       LLM provider abstraction
 internal/observability/  Structured logging (JSONL)
 internal/store/          SQLite persistence layer
 internal/prompts/        Default prompt templates
 web/frontend/            Vue 3 + Vite web console
-web/handlers/            HTTP API handlers, SSE hub
 configs/                 Example configuration
 migrations/              SQLite schema migrations
 docs/                    Design documents and milestone results

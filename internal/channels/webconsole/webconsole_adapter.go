@@ -1,12 +1,12 @@
-package handlers
+package webconsole
 
 import (
 	"context"
 	"encoding/json"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/SukeyByte/agent-gogo/internal/communication"
+	"github.com/google/uuid"
 )
 
 type WebConsoleAdapter struct {

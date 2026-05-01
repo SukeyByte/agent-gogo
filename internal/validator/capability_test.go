@@ -51,3 +51,36 @@ func TestCapabilityTaskValidatorUsesStructuredRequiredCapabilities(t *testing.T)
 		t.Fatalf("expected structured browser capability blocker, got %v", err)
 	}
 }
+
+func TestCapabilityTaskValidatorAcceptsDocumentSummaryAliases(t *testing.T) {
+	registry := capability.NewRegistry(capability.ToolSpec{Name: "file.read", RiskLevel: "low"})
+	validator := NewCapabilityTaskValidator(NewMinimalTaskValidator(), registry, capability.Policy{})
+	err := validator.ValidateTask(context.Background(), domain.Task{
+		ProjectID:            "project",
+		Title:                "Summarize README",
+		Description:          "Read README.md and summarize it",
+		AcceptanceCriteria:   []string{"summary produced"},
+		RequiredCapabilities: []string{"document-understanding", "summarization", "read"},
+	})
+	if err != nil {
+		t.Fatalf("expected document summary aliases to resolve to read capability, got %v", err)
+	}
+}
+
+func TestCapabilityTaskValidatorPrunesReadOnlyOverDeclaredCapabilities(t *testing.T) {
+	registry := capability.NewRegistry(
+		capability.ToolSpec{Name: "file.read", RiskLevel: "low"},
+		capability.ToolSpec{Name: "test.run", RiskLevel: "medium", RequiresShell: true},
+	)
+	validator := NewCapabilityTaskValidator(NewMinimalTaskValidator(), registry, capability.Policy{AllowShell: false})
+	err := validator.ValidateTask(context.Background(), domain.Task{
+		ProjectID:            "project",
+		Title:                "Read go.mod",
+		Description:          "读取当前仓库 go.mod，说明模块名和 Go 版本，不修改文件",
+		AcceptanceCriteria:   []string{"模块名和 Go 版本已说明"},
+		RequiredCapabilities: []string{"read", "execute", "verify"},
+	})
+	if err != nil {
+		t.Fatalf("expected read-only task to ignore over-declared execute/verify, got %v", err)
+	}
+}

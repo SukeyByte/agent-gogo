@@ -109,6 +109,49 @@ func TestEnsureResearchAndReflectionPreservesResearchBeforeReflection(t *testing
 	}
 }
 
+func TestLLMPlannerSplitsL3UmbrellaTask(t *testing.T) {
+	llm := provider.ChatFunc(func(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+		return provider.ChatResponse{
+			Model: req.Model,
+			Text: `{
+				"phases":[{"title":"完整实现","goal":"完成复杂项目","description":"单阶段大目标"}],
+				"tasks":[
+					{
+						"phase":"完整实现",
+						"title":"完成整个传奇任务",
+						"goal":"一次性完成所有事情",
+						"description":"这是一个过大的伞状任务",
+						"type":"general",
+						"depends_on":[],
+						"acceptance":["目标整体完成"],
+						"required_capabilities":["read"]
+					}
+				]
+			}`,
+		}, nil
+	})
+	planner := NewLLMPlanner(llm, "gpt-test")
+	tasks, err := planner.PlanProject(context.Background(), PlanRequest{
+		Project: domain.Project{ID: "project-legendary", Name: "agent-gogo", Goal: "完成一个传奇级复杂任务"},
+		ChainDecision: chain.Decision{
+			Level: chain.LevelProject,
+		},
+		IntentProfile: intent.Profile{
+			TaskType:   "general",
+			Complexity: "high",
+		},
+	})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if len(tasks) < 4 {
+		t.Fatalf("expected L3 umbrella task to be expanded to at least 4 tasks, got %d: %#v", len(tasks), tasks)
+	}
+	if tasks[len(tasks)-1].Title != "汇总执行状态与结果" {
+		t.Fatalf("expected final channel result task, got %q", tasks[len(tasks)-1].Title)
+	}
+}
+
 func TestLLMPlannerRejectsOverBroadFlatTaskList(t *testing.T) {
 	llm := provider.ChatFunc(func(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
 		return provider.ChatResponse{Text: `{"tasks":[

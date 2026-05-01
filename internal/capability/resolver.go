@@ -306,7 +306,23 @@ func sortedUnique(values []string) []string {
 }
 
 func normalizeCapability(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "_", "-")
+	switch value {
+	case "read-file", "file-read", "readfile":
+		return "read"
+	case "edit-file", "file-edit", "modify-file", "file-modify", "code-generation", "codegen":
+		return "write"
+	case "git-diff", "diff":
+		return "inspect_changes"
+	case "web", "webpage", "web-page", "web-read", "browser-read":
+		return "browser"
+	case "document-understanding", "document-read", "doc-read", "summarization", "summarisation", "summary", "summarize":
+		return "read"
+	case "test", "testing", "run-tests":
+		return "verify"
+	}
+	return value
 }
 
 func riskRank(risk string) int {

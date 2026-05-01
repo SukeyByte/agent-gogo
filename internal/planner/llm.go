@@ -51,6 +51,7 @@ func (p *LLMPlanner) PlanProject(ctx context.Context, req PlanRequest) ([]domain
 		return nil, fmt.Errorf("planner returned %d tasks, above max %d for this request", len(output.Tasks), maxTasks)
 	}
 	output.Tasks = ensureResearchAndReflectionTasks(req, output.Tasks)
+	output.Tasks = ensureL3MinimumDecomposition(req, output.Tasks)
 
 	tasks := make([]domain.Task, 0, len(output.Tasks))
 	for _, planned := range output.Tasks {
@@ -206,6 +207,65 @@ func needsResearchAndReflection(req PlanRequest) bool {
 	return false
 }
 
+func ensureL3MinimumDecomposition(req PlanRequest, planned []plannedTask) []plannedTask {
+	if req.ChainDecision.Level != "L3" || len(planned) >= 4 {
+		return planned
+	}
+	out := append([]plannedTask(nil), planned...)
+	reflectionTitle := firstTaskTitleMatching(out, []string{"反思", "reflection", "验收口径", "decomposition"})
+	lastTitle := lastTaskTitle(out)
+	concreteCount := 0
+	for _, task := range out {
+		if !taskMatches(task, []string{"研究", "research", "context", "反思", "reflection", "验收口径", "decomposition"}) {
+			concreteCount++
+		}
+	}
+	if concreteCount == 0 {
+		depends := []string{}
+		if reflectionTitle != "" {
+			depends = append(depends, reflectionTitle)
+		} else if lastTitle != "" {
+			depends = append(depends, lastTitle)
+		}
+		out = append(out, plannedTask{
+			Phase:                l3FallbackPhase(out),
+			Title:                "执行首个可验收切片",
+			Goal:                 "把传奇级目标压缩成一个可运行、可验收的最小切片并执行。",
+			Description:          "不要把整个目标当成一个大任务；先完成一个有证据、可继续扩展的切片。",
+			Type:                 fallbackTaskType(req),
+			DependsOn:            depends,
+			RequiredCapabilities: fallbackCapabilities(req),
+			Acceptance: []string{
+				"已完成一个最小可验收切片",
+				"切片结果有工具证据或可检查产物",
+				"剩余工作可继续按 DAG 推进",
+			},
+		})
+		lastTitle = "执行首个可验收切片"
+	}
+	if len(out) < 4 {
+		depends := []string{}
+		if lastTitle != "" {
+			depends = append(depends, lastTitle)
+		}
+		out = append(out, plannedTask{
+			Phase:                l3FallbackPhase(out),
+			Title:                "汇总执行状态与结果",
+			Goal:                 "汇总已完成切片、当前状态、证据和下一步，确保 channel 可以收到明确结果。",
+			Description:          "把运行状态和结果整理成用户可读的完成信号。",
+			Type:                 "general",
+			DependsOn:            depends,
+			RequiredCapabilities: []string{"verify"},
+			Acceptance: []string{
+				"已说明哪些任务完成、哪些仍待处理",
+				"已引用关键证据或产物",
+				"已给出明确的 channel 汇报结果",
+			},
+		})
+	}
+	return out
+}
+
 func maxTasksForRequest(req PlanRequest) int {
 	text := strings.ToLower(strings.Join([]string{req.IntentProfile.Complexity, req.IntentProfile.TaskType, req.Project.Goal, req.UserInput}, " "))
 	if req.ChainDecision.Level == "L3" || strings.Contains(text, "high") || strings.Contains(text, "complex") || strings.Contains(text, "project") || strings.Contains(text, "项目") {
@@ -265,6 +325,60 @@ func appendIfMissing(values []string, value string) []string {
 		}
 	}
 	return append(values, value)
+}
+
+func lastTaskTitle(tasks []plannedTask) string {
+	for i := len(tasks) - 1; i >= 0; i-- {
+		if title := strings.TrimSpace(tasks[i].Title); title != "" {
+			return title
+		}
+	}
+	return ""
+}
+
+func l3FallbackPhase(tasks []plannedTask) string {
+	for _, task := range tasks {
+		if phase := strings.TrimSpace(task.Phase); phase != "" {
+			return phase
+		}
+	}
+	return "执行与汇报"
+}
+
+func fallbackTaskType(req PlanRequest) string {
+	switch {
+	case req.ChainDecision.NeedBrowser:
+		return "browser"
+	case req.ChainDecision.NeedCode:
+		return "code"
+	case req.ChainDecision.NeedDocs:
+		return "document"
+	}
+	taskType := strings.ToLower(strings.TrimSpace(req.IntentProfile.TaskType))
+	switch {
+	case strings.Contains(taskType, "browser"), strings.Contains(taskType, "web"):
+		return "browser"
+	case strings.Contains(taskType, "code"):
+		return "code"
+	case strings.Contains(taskType, "document"), strings.Contains(taskType, "doc"):
+		return "document"
+	default:
+		return "general"
+	}
+}
+
+func fallbackCapabilities(req PlanRequest) []string {
+	caps := []string{"read"}
+	if req.ChainDecision.NeedBrowser || strings.Contains(strings.ToLower(req.IntentProfile.TaskType), "web") {
+		caps = append(caps, "browser")
+	}
+	if req.ChainDecision.NeedCode || strings.Contains(strings.ToLower(req.IntentProfile.TaskType), "code") {
+		caps = append(caps, "write", "verify")
+	}
+	if req.ChainDecision.NeedDocs || strings.Contains(strings.ToLower(req.IntentProfile.TaskType), "document") {
+		caps = append(caps, "create_artifact", "verify")
+	}
+	return textutil.SortedUniqueStrings(caps)
 }
 
 func plannedRequiredCapabilities(task plannedTask) []string {

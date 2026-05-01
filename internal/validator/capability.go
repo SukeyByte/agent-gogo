@@ -31,6 +31,7 @@ func (v *CapabilityTaskValidator) ValidateTask(ctx context.Context, task domain.
 	if len(required) == 0 {
 		required = InferRequiredCapabilities(task)
 	}
+	required = prunePassiveTaskCapabilities(task, required)
 	if len(required) == 0 || v.registry == nil {
 		return nil
 	}
@@ -66,4 +67,48 @@ func InferRequiredCapabilities(task domain.Task) []string {
 	add("inspect_changes", "git diff", "git status", "diff", "查看变更")
 	add("memory", "memory", "remember", "记忆", "保存经验")
 	return textutil.SortedUniqueStrings(required)
+}
+
+func prunePassiveTaskCapabilities(task domain.Task, required []string) []string {
+	if len(required) == 0 {
+		return nil
+	}
+	text := taskCapabilityText(task)
+	readOnly := hasAny(text, "不修改", "不改", "不写入", "不写文件", "只读", "只读取", "read-only", "do not modify", "do not write", "without modifying")
+	if !readOnly {
+		return required
+	}
+	needsExecution := hasAny(text, "go test", "npm test", "run test", "run tests", "shell.run", "execute command", "运行测试", "跑测试", "执行命令", "运行命令")
+	needsVerification := hasAny(text, "test pass", "tests pass", "验证", "验收", "确认通过", "测试通过", "跑测试")
+	var pruned []string
+	for _, capabilityName := range required {
+		switch strings.ToLower(strings.TrimSpace(capabilityName)) {
+		case "execute":
+			if needsExecution {
+				pruned = append(pruned, capabilityName)
+			}
+		case "verify":
+			if needsVerification {
+				pruned = append(pruned, capabilityName)
+			}
+		case "write", "create_artifact", "inspect_changes":
+			continue
+		default:
+			pruned = append(pruned, capabilityName)
+		}
+	}
+	return textutil.SortedUniqueStrings(pruned)
+}
+
+func taskCapabilityText(task domain.Task) string {
+	return strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
+}
+
+func hasAny(text string, markers ...string) bool {
+	for _, marker := range markers {
+		if strings.Contains(text, strings.ToLower(marker)) {
+			return true
+		}
+	}
+	return false
 }
