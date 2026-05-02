@@ -126,7 +126,7 @@ export const api = {
   },
 
   // Chat — fire-and-forget via POST /api/message, responses arrive via SSE
-  async listChatMessages(_sessionId: string): Promise<ChatMessage[]> { return mockChatMessages },
+  async listChatMessages(_sessionId: string): Promise<ChatMessage[]> { return [] },
   async sendChatMessage(_sessionId: string, content: string): Promise<void> {
     await post('/message', { type: 'goal.submitted', text: content })
   },

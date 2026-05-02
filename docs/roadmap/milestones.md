@@ -514,6 +514,8 @@ M1 和 M3 是执行系统的骨架，必须保持简单、可测、可恢复。M
 
 2026-05-01 追加验收结论：用 Computer Use 按真实用户路径验证长篇写作、代码建站和 X/Twitter 运营三类任务后，M10.6 的基础闭环成立，但 end-to-end 通用性第一次未完全通过。随后已收尾修复 blocked dependency reconciliation、Planner/Validator 的 no-shell 能力过度声明、命名文件产物完整性检查、浏览器默认可见、Chrome MCP target 前置、browser discovery、browser input label 兜底、browser interaction evidence gate，以及 browser-only action sequence 被误升 L3 的问题。复测确认网页读取和浏览器 input/click 交互均可通过完整 `agent-gogo` 自然语言链路完成。X/Twitter 发帖仍受登录态和最终第三方通信确认约束，作为运营类高风险闭环的后续专门验收。
 
+2026-05-02 收尾复测结论：改用新的 OpenAI-compatible provider（`https://token-plan-cn.xiaomimimo.com/v1`，`mimo-v2.5-pro`）完成长篇写作、代码建站、运营浏览器三向验收。长篇写作通过通用链路生成《潮汐城回声》三章并写入文件；代码任务通过通用链路生成可部署静态站点并写入本地预览与 Vercel/Netlify/GitHub Pages 部署说明；运营任务真实打开 X/Twitter 发帖入口，识别登录墙后自动降级为安全草稿文件，未发布第三方内容。追加修复文件路径锚定、append 写入与去重、最终验收依赖归一、repair 深度与回传、browser evidence report 机械完成、Web Console 异步 goal 提交，以及项目完成后 `ProjectStatus=COMPLETED` 的收尾状态。
+
 范围：
 
 1. 结构拆分：`app/cli.go`、`app/providers.go`、`app/web.go`、`tools/types.go`、`tools/registry.go`、`tools/builtin_runtime.go`、`runtime/context_assets.go`。
@@ -534,6 +536,9 @@ M1 和 M3 是执行系统的骨架，必须保持简单、可测、可恢复。M
 6. `go test ./internal/chain ./internal/planner ./internal/runtime ./internal/communication` 覆盖 AI scale 识别、channel 自动运行、progress/result 通知和项目级伞状任务拆解。
 7. `RUN_DEEPSEEK_SMOKE=1 DEEPSEEK_API_KEY=... go test ./internal/chain -run TestDeepSeekRouterProjectScaleSmoke -count=1 -timeout=3m` 通过，验证无标签词输入也能由 AI scale 信号识别为项目级任务。
 8. 浏览器能力复测通过：`agent-gogo` 对 `https://example.com` 网页读取会真实调用 `browser.open` / `browser.extract` 并完成 1 个任务；本地交互页会真实调用 `browser.open` / `browser.input` / `browser.click`，页面出现 `done:hello-browser` 后完成任务。
+9. 新 provider 三向验收通过：长篇写作、静态网站、X/Twitter 运营浏览器任务均走 Generic Planner / GenericExecutor / Tool Runtime 主路径。
+10. 运营任务遇到登录墙或发布确认时不得要求用户自行解决；必须记录浏览器状态，生成安全 draft artifact，并停止在最终发布前等待确认。
+11. 所有任务完成后项目状态必须落到 `COMPLETED`，Web Console 看板不能继续显示为活动项目。
 
 追加三向验收与收尾：
 

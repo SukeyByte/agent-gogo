@@ -72,7 +72,7 @@ const pageTitle = computed(() => {
       <header class="flex h-14 items-center justify-between border-b border-gray-800 bg-gray-900 px-6">
         <h1 class="text-base font-semibold text-gray-100">{{ pageTitle }}</h1>
         <div class="flex items-center gap-4 text-xs text-gray-500">
-          <span>DeepSeek Chat</span>
+          <span>LLM Ready</span>
           <span class="h-2 w-2 rounded-full bg-green-500"></span>
         </div>
       </header>

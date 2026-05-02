@@ -11,8 +11,8 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/SukeyByte/agent-gogo/internal/domain"
+	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
 
@@ -141,6 +141,26 @@ func (s *SQLiteStore) GetProject(ctx context.Context, id string) (domain.Project
 		return domain.Project{}, err
 	}
 	return project, nil
+}
+
+func (s *SQLiteStore) UpdateProjectStatus(ctx context.Context, projectID string, status domain.ProjectStatus) (domain.Project, error) {
+	now := utcNow()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE projects
+		SET status = ?, updated_at = ?
+		WHERE id = ?
+	`, status, formatTime(now), projectID)
+	if err != nil {
+		return domain.Project{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return domain.Project{}, err
+	}
+	if affected == 0 {
+		return domain.Project{}, sql.ErrNoRows
+	}
+	return s.GetProject(ctx, projectID)
 }
 
 func (s *SQLiteStore) ListProjects(ctx context.Context) ([]domain.Project, error) {

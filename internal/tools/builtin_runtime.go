@@ -62,7 +62,7 @@ func NewBuiltinRuntime(store Store, root string) *Runtime {
 	})
 	runtime.Register(Spec{
 		Name:        "file.write",
-		Description: "Write a workspace file.",
+		Description: "Write a workspace file. Set append=true or mode=\"append\" to append content instead of replacing the file.",
 		RiskLevel:   "medium",
 	}, func(ctx context.Context, args map[string]any) (Result, error) {
 		output, err := writeWorkspaceFile(ctx, root, args)

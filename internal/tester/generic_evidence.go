@@ -137,38 +137,78 @@ func genericEvidenceFailure(task domain.Task, observations []domain.Observation,
 }
 
 func requiredFileEvidenceFailure(task domain.Task, calls []domain.ToolCall) string {
-	required := requiredFileNames(task)
+	required := requiredFileNamesForEvidence(task)
 	if len(required) < 2 {
 		return ""
 	}
-	written := map[string]struct{}{}
+	evidenced := map[string]struct{}{}
 	for _, call := range calls {
 		if call.Status != domain.ToolCallStatusSucceeded {
 			continue
 		}
 		switch call.Name {
-		case "file.write", "artifact.write", "document.write":
+		case "file.write", "artifact.write", "document.write", "file.read":
 			for _, path := range callPaths(call) {
 				if base := filepath.Base(path); base != "." && base != "/" && strings.TrimSpace(base) != "" {
-					written[base] = struct{}{}
+					evidenced[base] = struct{}{}
 				}
 			}
 		}
 	}
 	var missing []string
 	for _, name := range required {
-		if _, ok := written[name]; !ok {
+		if _, ok := evidenced[name]; !ok {
 			missing = append(missing, name)
 		}
 	}
 	if len(missing) == 0 {
 		return ""
 	}
-	return "task requires file artifact(s) not written in this attempt: " + strings.Join(missing, ", ")
+	return "task requires file artifact(s) not evidenced in this attempt: " + strings.Join(missing, ", ")
+}
+
+func requiredFileNamesForEvidence(task domain.Task) []string {
+	required := requiredFileNames(task)
+	if len(required) < 2 || taskRequiresAllNamedFileEvidence(task) {
+		return required
+	}
+	scoped := fileNamesFromText(strings.Join([]string{task.Title, task.Description}, " "))
+	if len(scoped) > 0 {
+		return scoped
+	}
+	return nil
+}
+
+func taskRequiresAllNamedFileEvidence(task domain.Task) bool {
+	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
+	for _, marker := range []string{
+		"all named files",
+		"all three files",
+		"all files",
+		"three files",
+		"three static",
+		"全部文件",
+		"所有文件",
+		"三个文件",
+		"三個文件",
+		"三个静态",
+		"三個靜態",
+		"三个产物",
+		"三個產物",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func requiredFileNames(task domain.Task) []string {
 	text := strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " ")
+	return fileNamesFromText(text)
+}
+
+func fileNamesFromText(text string) []string {
 	seen := map[string]struct{}{}
 	var out []string
 	for _, field := range strings.FieldsFunc(text, func(r rune) bool {

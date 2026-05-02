@@ -232,16 +232,34 @@ func (b *runtimeServiceBridge) HandleChannelEvent(ctx context.Context, event web
 		return b.updateRuntimeConfig(ctx, event.Payload)
 	case "session.resume":
 		return b.resumeSession(ctx, event.SessionID, event.ProjectID)
+	case "goal.submitted":
+		runtimeEvent := toRuntimeChannelEvent(event)
+		go func() {
+			if err := b.service.HandleChannelEvent(context.Background(), runtimeEvent); err != nil {
+				_ = b.service.HandleChannelEvent(context.Background(), appruntime.ChannelEvent{
+					Type:      "runtime.error",
+					ChannelID: runtimeEvent.ChannelID,
+					SessionID: runtimeEvent.SessionID,
+					ProjectID: runtimeEvent.ProjectID,
+					Text:      err.Error(),
+				})
+			}
+		}()
+		return nil
 	default:
-		return b.service.HandleChannelEvent(ctx, appruntime.ChannelEvent{
-			Type:      event.Type,
-			ChannelID: event.ChannelID,
-			SessionID: event.SessionID,
-			ProjectID: event.ProjectID,
-			TaskID:    event.TaskID,
-			Text:      event.Text,
-			Payload:   event.Payload,
-		})
+		return b.service.HandleChannelEvent(ctx, toRuntimeChannelEvent(event))
+	}
+}
+
+func toRuntimeChannelEvent(event webconsole.InboundEvent) appruntime.ChannelEvent {
+	return appruntime.ChannelEvent{
+		Type:      event.Type,
+		ChannelID: event.ChannelID,
+		SessionID: event.SessionID,
+		ProjectID: event.ProjectID,
+		TaskID:    event.TaskID,
+		Text:      event.Text,
+		Payload:   event.Payload,
 	}
 }
 

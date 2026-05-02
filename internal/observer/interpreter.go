@@ -119,7 +119,13 @@ func InterpretToolCall(call domain.ToolCall, result tools.Result) State {
 	case "file.write":
 		state.Status = StateChanged
 		state.Type = "state.file_changed"
-		state.Summary = fmt.Sprintf("wrote %s", stringOutput(result.Output, "path"))
+		if stringOutput(result.Output, "operation") == "append" {
+			state.Summary = fmt.Sprintf("appended %s", stringOutput(result.Output, "path"))
+			state.Signals["operation"] = "append"
+		} else {
+			state.Summary = fmt.Sprintf("wrote %s", stringOutput(result.Output, "path"))
+			state.Signals["operation"] = "write"
+		}
 		state.Signals["path"] = stringOutput(result.Output, "path")
 	case "file.patch":
 		state.Status = StateChanged

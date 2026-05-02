@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
+	"regexp"
 	"strings"
 
 	"github.com/SukeyByte/agent-gogo/internal/domain"
@@ -120,6 +122,7 @@ func (e *GenericExecutor) Execute(ctx context.Context, task domain.Task) (Result
 		if err != nil {
 			return e.fail(ctx, inProgress, attempt, err)
 		}
+		action.Args = normalizeActionArgsForTask(inProgress, action.Tool, action.Args)
 		fingerprint := actionFingerprint(action)
 		if fingerprint != "" {
 			fingerprints[fingerprint]++
@@ -261,6 +264,99 @@ func (e *GenericExecutor) nextAction(ctx context.Context, task domain.Task, atte
 		action.Action = "tool_call"
 	}
 	return action, nil
+}
+
+var taskPathPattern = regexp.MustCompile("(?:^|[\\s\"'(<（])((?:\\.?/)?(?:artifacts|docs|web|internal|cmd|pkg|data|logs|testdata|tmp|public|src)/[A-Za-z0-9._/@+=-]+)")
+
+func normalizeActionArgsForTask(task domain.Task, tool string, args map[string]any) map[string]any {
+	if !toolUsesWorkspacePath(tool) || len(args) == 0 {
+		return args
+	}
+	actual, ok := args["path"].(string)
+	if !ok {
+		return args
+	}
+	actual = strings.TrimSpace(actual)
+	if actual == "" {
+		return args
+	}
+	normalizedActual := normalizeWorkspacePath(actual)
+	expected := matchingTaskPath(task, normalizedActual)
+	if expected == "" && normalizedActual != actual {
+		expected = normalizedActual
+	}
+	if expected == "" || expected == actual {
+		return args
+	}
+	next := make(map[string]any, len(args))
+	for key, value := range args {
+		next[key] = value
+	}
+	next["path"] = expected
+	return next
+}
+
+func toolUsesWorkspacePath(tool string) bool {
+	switch tool {
+	case "file.read", "file.write", "file.patch", "document.write", "artifact.write":
+		return true
+	default:
+		return false
+	}
+}
+
+func matchingTaskPath(task domain.Task, actual string) string {
+	paths := taskReferencedPaths(task)
+	if len(paths) == 0 {
+		return ""
+	}
+	actual = normalizeWorkspacePath(actual)
+	actualBase := path.Base(actual)
+	for _, candidate := range paths {
+		if candidate == actual {
+			return ""
+		}
+		if path.Base(candidate) == actualBase {
+			return candidate
+		}
+	}
+	if len(paths) == 1 && !strings.Contains(actual, "/") {
+		return paths[0]
+	}
+	return ""
+}
+
+func taskReferencedPaths(task domain.Task) []string {
+	texts := []string{task.Title, task.Description}
+	texts = append(texts, task.AcceptanceCriteria...)
+	seen := map[string]bool{}
+	paths := []string{}
+	for _, text := range texts {
+		for _, match := range taskPathPattern.FindAllStringSubmatch(text, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			candidate := normalizeWorkspacePath(match[1])
+			if candidate == "" || seen[candidate] {
+				continue
+			}
+			seen[candidate] = true
+			paths = append(paths, candidate)
+		}
+	}
+	return paths
+}
+
+func normalizeWorkspacePath(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimRight(value, ".,;:，。；：)")
+	value = strings.TrimPrefix(value, "./")
+	for _, prefix := range []string{"artifacts/", "docs/", "web/", "internal/", "cmd/", "pkg/", "data/", "logs/", "testdata/", "tmp/", "public/", "src/"} {
+		if idx := strings.Index(value, prefix); idx >= 0 {
+			return value[idx:]
+		}
+	}
+	return value
 }
 
 func (e *GenericExecutor) normalizeToolName(name string) string {
@@ -526,6 +622,9 @@ func autoFinishSummary(task domain.Task, events []actionEvent) (string, bool) {
 		if taskNeedsReadOnly(task) && event.Tool == "file.read" && event.State == "succeeded" {
 			return "file content captured for this read-only task: " + firstNonEmpty(event.Summary, event.Output), true
 		}
+		if taskNeedsEvidenceReport(task) && hasSourceRead && hasBrowserRead && event.Tool == "file.read" && event.State == "succeeded" {
+			return "browser evidence report captured for this task: " + firstNonEmpty(event.Summary, event.Output), true
+		}
 		if taskNeedsGeneratedText(task) && (event.Tool == "file.write" || event.Tool == "document.write" || event.Tool == "artifact.write") && event.State == "changed" {
 			return "generated text written for this task: " + firstNonEmpty(event.Summary, event.Output), true
 		}
@@ -543,6 +642,27 @@ func autoFinishSummary(task domain.Task, events []actionEvent) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func taskNeedsEvidenceReport(task domain.Task) bool {
+	text := strings.ToLower(strings.Join(append([]string{task.Title, task.Description}, task.AcceptanceCriteria...), " "))
+	if browserInteractionMissingReason(task, nil) != "" {
+		return false
+	}
+	return containsAny(text, []string{
+		"browser evidence",
+		"browser status",
+		"final status",
+		"compile and report",
+		"report browser",
+		"evidence and final",
+		"浏览器证据",
+		"瀏覽器證據",
+		"最终状态",
+		"最終狀態",
+		"汇报浏览器",
+		"匯報瀏覽器",
+	})
 }
 
 func taskNeedsPassingTest(task domain.Task) bool {
@@ -735,11 +855,25 @@ func taskNeedsGeneratedText(task domain.Task) bool {
 		"summarize",
 		"summary",
 		"write a summary",
+		"write",
 		"draft",
 		"compose",
+		"outline",
+		"plan",
+		"chapter",
 		"总结",
 		"總結",
 		"概括",
+		"规划",
+		"規劃",
+		"大纲",
+		"大綱",
+		"创作",
+		"創作",
+		"写作",
+		"寫作",
+		"章节",
+		"章節",
 		"撰写",
 		"撰寫",
 		"编写",
