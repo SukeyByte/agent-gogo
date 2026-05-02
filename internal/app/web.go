@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/SukeyByte/agent-gogo/internal/channels/webconsole"
 	"github.com/SukeyByte/agent-gogo/internal/communication"
@@ -70,14 +71,19 @@ func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Wri
 	var sender webconsole.ChannelEventSender
 	var bridge *runtimeServiceBridge
 	llm, llmErr := newLLMProvider(cfg)
+	var swappable *provider.SwappableLLMProvider
 	if llmErr == nil {
-		bridge, err = initWebRuntime(ctx, cfg, sqlite, llm, hub, channelID, sessionID, assets)
+		swappable = provider.NewSwappableLLMProvider(llm)
+		swappable.SetModel(cfg.LLM.Model)
+		bridge, err = initWebRuntime(ctx, cfg, sqlite, swappable, hub, channelID, sessionID, assets)
 		if err != nil {
 			_, _ = fmt.Fprintf(writer, "Warning: runtime init failed (%v), running in read-only mode\n", err)
 			sender = nil
 			bridge = nil
 		} else {
 			sender = bridge
+			bridge.swappable = swappable
+			bridge.cfgPath = opts.ConfigPath
 			defer bridge.Close()
 		}
 	} else {
@@ -102,9 +108,14 @@ func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Wri
 		LLMTimeoutSeconds:      int(cfg.LLM.Timeout.Seconds()),
 		BrowserHeadless:        cfg.Browser.Headless,
 		BrowserTimeoutSeconds:  int(cfg.Browser.Timeout.Seconds()),
+		LLMProvider:            cfg.LLM.Provider,
+		LLMModel:               cfg.LLM.Model,
+		LLMBaseURL:             cfg.LLM.BaseURL,
+		LLMAPIKey:              cfg.LLM.APIKey,
 	}, channelID, sessionID, distDir)
 	apiServer.UseSessionStore(sqlite)
 	apiServer.UseAssets(assets.skills, assets.personas, assets.memories)
+	apiServer.UseConfigPath(opts.ConfigPath)
 
 	mode := "read-only"
 	if sender != nil {
@@ -217,6 +228,8 @@ type runtimeServiceBridge struct {
 	toolRuntime   *tools.Runtime
 	policy        tools.SecurityPolicy
 	browserCloser func() error
+	swappable     *provider.SwappableLLMProvider
+	cfgPath       string
 }
 
 func (b *runtimeServiceBridge) Close() error {
@@ -309,6 +322,31 @@ func (b *runtimeServiceBridge) updateRuntimeConfig(ctx context.Context, payload 
 	}
 	if b.toolRuntime != nil {
 		b.toolRuntime.UseSecurityPolicy(b.policy, tools.AutoConfirmationGate{})
+	}
+	// LLM hot-swap: if any LLM identity field changed, create new provider and swap
+	llmProvider := strings.TrimSpace(payload["llm_provider"])
+	llmModel := strings.TrimSpace(payload["llm_model"])
+	llmBaseURL := strings.TrimSpace(payload["llm_base_url"])
+	llmAPIKey := strings.TrimSpace(payload["llm_api_key"])
+	if llmProvider != "" || llmModel != "" || llmBaseURL != "" || llmAPIKey != "" {
+		if b.swappable != nil {
+			llmCfg := appconfig.LLMConfig{
+				Provider: llmProvider,
+				Model:    llmModel,
+				BaseURL:  llmBaseURL,
+				APIKey:   llmAPIKey,
+				Timeout:  120 * time.Second,
+			}
+			newLLM, err := newLLMFromConfig(llmCfg)
+			if err != nil {
+				return fmt.Errorf("failed to create new LLM provider: %w", err)
+			}
+			b.swappable.Swap(newLLM)
+			if llmModel != "" {
+				b.swappable.SetModel(llmModel)
+				b.service.UseLLM(b.swappable, llmModel)
+			}
+		}
 	}
 	return b.service.HandleChannelEvent(ctx, appruntime.ChannelEvent{
 		Type:    "config.update",

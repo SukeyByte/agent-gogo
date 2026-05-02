@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -35,6 +36,7 @@ func (s *APIServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		s.persistConfig()
 		writeJSON(w, map[string]string{"status": "accepted"})
 	default:
 		writeJSONError(w, http.StatusMethodNotAllowed, "GET, POST, or PATCH only")
@@ -97,6 +99,10 @@ func flattenConfigPayload(body map[string]any) map[string]string {
 	}
 	if llm, _ := body["llm"].(map[string]any); llm != nil {
 		put("llm_timeout_seconds", firstPresent(llm, "timeout", "timeout_seconds"))
+		put("llm_provider", llm["provider"])
+		put("llm_model", llm["model"])
+		put("llm_base_url", llm["base_url"])
+		put("llm_api_key", llm["api_key"])
 	}
 	if browser, _ := body["browser"].(map[string]any); browser != nil {
 		put("browser_headless", browser["headless"])
@@ -148,6 +154,18 @@ func (s *APIServer) applyConfigPayload(payload map[string]string) {
 	}
 	if value, ok := intPayload(payload, "browser_timeout_seconds"); ok {
 		s.config.BrowserTimeoutSeconds = value
+	}
+	if v := strings.TrimSpace(payload["llm_provider"]); v != "" {
+		s.config.LLMProvider = v
+	}
+	if v := strings.TrimSpace(payload["llm_model"]); v != "" {
+		s.config.LLMModel = v
+	}
+	if v := strings.TrimSpace(payload["llm_base_url"]); v != "" {
+		s.config.LLMBaseURL = v
+	}
+	if v := strings.TrimSpace(payload["llm_api_key"]); v != "" {
+		s.config.LLMAPIKey = v
 	}
 }
 
@@ -207,4 +225,42 @@ func splitCommaList(raw string) []string {
 		}
 	}
 	return values
+}
+
+// persistConfig writes the current ConfigView to the config file as a simple YAML patch.
+func (s *APIServer) persistConfig() {
+	if s.configPath == "" {
+		return
+	}
+	var sb strings.Builder
+	sb.WriteString("llm:\n")
+	sb.WriteString("  provider: " + s.config.LLMProvider + "\n")
+	sb.WriteString("  model: " + s.config.LLMModel + "\n")
+	sb.WriteString("  base_url: " + s.config.LLMBaseURL + "\n")
+	sb.WriteString("  api_key: " + s.config.LLMAPIKey + "\n")
+	sb.WriteString("  timeout_seconds: " + strconv.Itoa(s.config.LLMTimeoutSeconds) + "\n")
+	sb.WriteString("browser:\n")
+	sb.WriteString("  headless: " + strconv.FormatBool(s.config.BrowserHeadless) + "\n")
+	sb.WriteString("  timeout_seconds: " + strconv.Itoa(s.config.BrowserTimeoutSeconds) + "\n")
+	sb.WriteString("storage:\n")
+	sb.WriteString("  workspace_path: " + s.config.WorkspacePath + "\n")
+	sb.WriteString("  sqlite_path: " + s.config.SQLitePath + "\n")
+	sb.WriteString("  artifact_path: " + s.config.ArtifactPath + "\n")
+	sb.WriteString("  log_path: " + s.config.LogPath + "\n")
+	if len(s.config.SkillRoots) > 0 {
+		sb.WriteString("  skill_roots:\n")
+		for _, r := range s.config.SkillRoots {
+			sb.WriteString("    - " + r + "\n")
+		}
+	}
+	if s.config.PersonaPath != "" {
+		sb.WriteString("  persona_path: " + s.config.PersonaPath + "\n")
+	}
+	sb.WriteString("runtime:\n")
+	sb.WriteString("  context_max_chars: " + strconv.Itoa(s.config.ContextMaxChars) + "\n")
+	sb.WriteString("  max_tasks_per_project: " + strconv.Itoa(s.config.MaxTasksPerProject) + "\n")
+	sb.WriteString("security:\n")
+	sb.WriteString("  require_confirm_high_risk: " + strconv.FormatBool(s.config.RequireConfirmHighRisk) + "\n")
+	sb.WriteString("  allow_shell: " + strconv.FormatBool(s.config.AllowShell) + "\n")
+	_ = os.WriteFile(s.configPath, []byte(sb.String()), 0o644)
 }

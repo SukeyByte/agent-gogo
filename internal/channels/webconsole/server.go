@@ -40,6 +40,10 @@ type ConfigView struct {
 	LLMTimeoutSeconds      int      `json:"llm_timeout_seconds"`
 	BrowserHeadless        bool     `json:"browser_headless"`
 	BrowserTimeoutSeconds  int      `json:"browser_timeout_seconds"`
+	LLMProvider            string   `json:"llm_provider"`
+	LLMModel               string   `json:"llm_model"`
+	LLMBaseURL             string   `json:"llm_base_url"`
+	LLMAPIKey              string   `json:"llm_api_key"`
 }
 
 type Server struct {

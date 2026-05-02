@@ -141,10 +141,32 @@ export const api = {
   async listSkills(): Promise<SkillCard[]> { return withFallback(() => request<SkillCard[]>('/skills'), mockSkills) },
   async getSkill(id: string): Promise<SkillCard> { return withFallback(() => request<SkillCard>(`/skills/${id}`), mockSkills.find(s => s.id === id) || mockSkills[0]) },
   async searchSkills(query: string): Promise<SkillCard[]> { return withFallback(() => request<SkillCard[]>(`/skills?q=${encodeURIComponent(query)}`), mockSkills.filter(s => s.name.includes(query) || s.description.includes(query))) },
+  async searchGithubRepos(query: string): Promise<Array<{owner: string; repo: string; full_name: string; description: string; stars: number; html_url: string; default_branch: string}>> {
+    return request(`/skills/search-github?q=${encodeURIComponent(query)}`)
+  },
+  async listGithubSkillFiles(owner: string, repo: string, branch?: string): Promise<Array<{owner: string; repo: string; path: string; branch: string}>> {
+    const suffix = branch ? `&branch=${encodeURIComponent(branch)}` : ''
+    return request(`/skills/github-files?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}${suffix}`)
+  },
+  async installSkill(data: { owner: string; repo: string; path: string; branch?: string; root?: string }): Promise<SkillCard> {
+    return request<SkillCard>('/skills/install', { method: 'POST', body: JSON.stringify(data) })
+  },
+  async deleteSkill(id: string): Promise<void> {
+    await post(`/skills/${id}/delete`, {})
+  },
 
   // Personas
   async listPersonas(): Promise<PersonaCard[]> { return withFallback(() => request<PersonaCard[]>('/personas'), mockPersonas) },
   async getPersona(id: string): Promise<PersonaCard> { return withFallback(() => request<PersonaCard>(`/personas/${id}`), mockPersonas.find(p => p.id === id) || mockPersonas[0]) },
+  async createPersona(data: { name: string; type: string; description: string; instructions: string }): Promise<PersonaCard> {
+    return request<PersonaCard>('/personas/create', { method: 'POST', body: JSON.stringify(data) })
+  },
+  async updatePersona(id: string, data: { name: string; type: string; description: string; instructions: string }): Promise<PersonaCard> {
+    return request<PersonaCard>(`/personas/${id}/update`, { method: 'POST', body: JSON.stringify(data) })
+  },
+  async deletePersona(id: string): Promise<void> {
+    await post(`/personas/${id}/delete`, {})
+  },
 
   // Memory
   async listMemories(scope?: string): Promise<MemoryItem[]> {
@@ -155,9 +177,20 @@ export const api = {
     return withFallback(() => request<MemoryItem[]>(`/memory?q=${encodeURIComponent(query)}`), mockMemories.filter(m => m.summary.includes(query) || m.body.includes(query) || m.tags.some(t => t.includes(query))))
   },
   async addMemory(item: Partial<MemoryItem>): Promise<MemoryItem> {
-    return { id: `mem-${Date.now()}`, scope: item.scope || 'working', type: item.type || 'fuzzy', tags: item.tags || [], summary: item.summary || '', body: item.body || '', confidence: item.confidence || 0.8, artifact_ref: '', source_task_id: '', version_hash: `m${Date.now()}` }
+    return request<MemoryItem>('/memory/create', {
+      method: 'POST',
+      body: JSON.stringify({
+        scope: item.scope || 'working',
+        type: item.type || 'fuzzy',
+        summary: item.summary || '',
+        body: item.body || '',
+        tags: item.tags || [],
+      }),
+    })
   },
-  async deleteMemory(_id: string): Promise<void> {},
+  async deleteMemory(id: string): Promise<void> {
+    await post(`/memory/${id}/delete`, {})
+  },
 
   // Channels — mock only
   async listChannels(): Promise<ChannelInfo[]> { return mockChannels },
@@ -167,7 +200,7 @@ export const api = {
     return withFallback(async (): Promise<AppConfig> => {
       const raw = await request<Record<string, any>>('/config')
       return {
-        llm: { provider: '', model: '', base_url: '', api_key: '', timeout: raw.llm_timeout_seconds || 0 },
+        llm: { provider: raw.llm_provider || '', model: raw.llm_model || '', base_url: raw.llm_base_url || '', api_key: raw.llm_api_key || '', timeout: raw.llm_timeout_seconds || 0 },
         embedding: { provider: '', model: '', base_url: '', api_key: '' },
         browser: { provider: '', mcp_url: '', headless: !!raw.browser_headless, timeout: raw.browser_timeout_seconds || 0 },
         storage: {

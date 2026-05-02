@@ -9,6 +9,7 @@ const searchQuery = ref('')
 const scopeFilter = ref<string>('all')
 const loading = ref(true)
 const showAddForm = ref(false)
+const saving = ref(false)
 const newMemory = ref({ scope: 'working', type: 'fuzzy', summary: '', body: '', tags: '' })
 
 const scopes = ['all', 'working', 'project', 'long_term']
@@ -47,23 +48,34 @@ async function search() {
 }
 
 async function addMemory() {
-  const item = await api.addMemory({
-    scope: newMemory.value.scope as MemoryItem['scope'],
-    type: newMemory.value.type as MemoryItem['type'],
-    summary: newMemory.value.summary,
-    body: newMemory.value.body,
-    tags: newMemory.value.tags.split(',').map(t => t.trim()).filter(Boolean),
-  })
-  memories.value.unshift(item)
-  applyFilters()
-  showAddForm.value = false
-  newMemory.value = { scope: 'working', type: 'fuzzy', summary: '', body: '', tags: '' }
+  saving.value = true
+  try {
+    const item = await api.addMemory({
+      scope: newMemory.value.scope as MemoryItem['scope'],
+      type: newMemory.value.type as MemoryItem['type'],
+      summary: newMemory.value.summary,
+      body: newMemory.value.body,
+      tags: newMemory.value.tags.split(',').map(t => t.trim()).filter(Boolean),
+    })
+    memories.value.unshift(item)
+    applyFilters()
+    showAddForm.value = false
+    newMemory.value = { scope: 'working', type: 'fuzzy', summary: '', body: '', tags: '' }
+  } catch (e: any) {
+    alert('Failed to add memory: ' + e.message)
+  } finally {
+    saving.value = false
+  }
 }
 
 async function deleteMemory(id: string) {
-  await api.deleteMemory(id)
-  memories.value = memories.value.filter(m => m.id !== id)
-  applyFilters()
+  try {
+    await api.deleteMemory(id)
+    memories.value = memories.value.filter(m => m.id !== id)
+    applyFilters()
+  } catch (e: any) {
+    alert('Failed to delete memory: ' + e.message)
+  }
 }
 </script>
 
@@ -114,7 +126,7 @@ async function deleteMemory(id: string) {
       <input v-model="newMemory.tags" placeholder="Tags (comma separated)" class="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:border-indigo-500 focus:outline-none" />
       <div class="flex gap-2 justify-end">
         <button @click="showAddForm = false" class="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-400">Cancel</button>
-        <button @click="addMemory" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm text-white hover:bg-indigo-500">Save</button>
+        <button @click="addMemory" :disabled="saving" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm text-white hover:bg-indigo-500 disabled:opacity-50">Save</button>
       </div>
     </div>
 
