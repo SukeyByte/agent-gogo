@@ -2,6 +2,7 @@ package webconsole
 
 import (
 	"context"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -31,6 +32,7 @@ type APIServer struct {
 	channelID  string
 	sessionID  string
 	distDir    string
+	embeddedFS fs.FS
 	skills     *skill.Registry
 	personas   *persona.Registry
 	memories   *memory.Index
@@ -56,6 +58,13 @@ func (s *APIServer) UseSessionStore(sessions SessionStore) {
 
 func (s *APIServer) UseConfigPath(path string) {
 	s.configPath = path
+}
+
+// UseEmbeddedDist registers a build-time embedded copy of the frontend dist
+// (rooted at the dist directory). It is used when the on-disk dist directory
+// is unavailable so the binary works from any working directory.
+func (s *APIServer) UseEmbeddedDist(dist fs.FS) {
+	s.embeddedFS = dist
 }
 
 func (s *APIServer) UseAssets(skills *skill.Registry, personas *persona.Registry, memories *memory.Index) {
@@ -102,7 +111,7 @@ func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Static files / SPA fallback
-	if s.distDir != "" {
+	if s.distDir != "" || s.embeddedFS != nil {
 		s.serveSPA(w, r)
 		return
 	}
@@ -190,65 +199,93 @@ func (s *APIServer) apiMemoryRoutes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *APIServer) serveSPA(w http.ResponseWriter, r *http.Request) {
-	// Check if distDir exists
-	if _, err := os.Stat(s.distDir); os.IsNotExist(err) {
+	cleanPath := filepath.Clean(r.URL.Path)
+	if cleanPath == "/" || cleanPath == "." {
+		cleanPath = "/index.html"
+	}
+	rel := strings.TrimPrefix(cleanPath, "/")
+	if rel == "" || hasDotDotElement(rel) {
 		http.NotFound(w, r)
 		return
 	}
 
-	// Try to serve static file
-	cleanPath := filepath.Clean(r.URL.Path)
-	if cleanPath == "/" {
-		cleanPath = "/index.html"
-	}
-	filePath := filepath.Join(s.distDir, cleanPath)
-
-	if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
-		// Set content type for common assets
-		ext := filepath.Ext(filePath)
-		switch ext {
-		case ".js":
-			w.Header().Set("Content-Type", "application/javascript")
-		case ".css":
-			w.Header().Set("Content-Type", "text/css")
-		case ".html":
-			w.Header().Set("Content-Type", "text/html")
-		case ".svg":
-			w.Header().Set("Content-Type", "image/svg+xml")
-		case ".png":
-			w.Header().Set("Content-Type", "image/png")
-		case ".ico":
-			w.Header().Set("Content-Type", "image/x-icon")
-		case ".json":
-			w.Header().Set("Content-Type", "application/json")
-		case ".woff", ".woff2":
-			w.Header().Set("Content-Type", "font/woff2")
+	// On-disk dist wins when present so dev rebuilds are served without recompiling.
+	if s.distDir != "" {
+		filePath := filepath.Join(s.distDir, cleanPath)
+		if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+			s.serveDiskFile(w, r, filePath)
+			return
 		}
-		http.ServeFile(w, r, filePath)
-		return
+	}
+	if s.embeddedFS != nil {
+		if _, err := fs.Stat(s.embeddedFS, rel); err == nil {
+			http.ServeFileFS(w, r, s.embeddedFS, rel)
+			return
+		}
 	}
 
 	// SPA fallback: serve index.html for client-side routing
-	indexPath := filepath.Join(s.distDir, "index.html")
-	if _, err := os.Stat(indexPath); err == nil {
-		http.ServeFile(w, r, indexPath)
-		return
+	if s.distDir != "" {
+		indexPath := filepath.Join(s.distDir, "index.html")
+		if info, err := os.Stat(indexPath); err == nil && !info.IsDir() {
+			s.serveDiskFile(w, r, indexPath)
+			return
+		}
 	}
-
+	if s.embeddedFS != nil {
+		if _, err := fs.Stat(s.embeddedFS, "index.html"); err == nil {
+			http.ServeFileFS(w, r, s.embeddedFS, "index.html")
+			return
+		}
+	}
 	http.NotFound(w, r)
+}
+
+func hasDotDotElement(rel string) bool {
+	for _, part := range strings.Split(rel, "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *APIServer) serveDiskFile(w http.ResponseWriter, r *http.Request, filePath string) {
+	// Set content type for common assets
+	switch filepath.Ext(filePath) {
+	case ".js":
+		w.Header().Set("Content-Type", "application/javascript")
+	case ".css":
+		w.Header().Set("Content-Type", "text/css")
+	case ".html":
+		w.Header().Set("Content-Type", "text/html")
+	case ".svg":
+		w.Header().Set("Content-Type", "image/svg+xml")
+	case ".png":
+		w.Header().Set("Content-Type", "image/png")
+	case ".ico":
+		w.Header().Set("Content-Type", "image/x-icon")
+	case ".json":
+		w.Header().Set("Content-Type", "application/json")
+	case ".woff", ".woff2":
+		w.Header().Set("Content-Type", "font/woff2")
+	}
+	http.ServeFile(w, r, filePath)
 }
 
 // WalkDistDir returns true if the dist directory contains built assets
 func (s *APIServer) HasDistAssets() bool {
-	if s.distDir == "" {
-		return false
+	if s.distDir != "" {
+		if entries, err := os.ReadDir(s.distDir); err == nil {
+			for _, e := range entries {
+				if e.Name() == "index.html" {
+					return true
+				}
+			}
+		}
 	}
-	entries, err := os.ReadDir(s.distDir)
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		if e.Name() == "index.html" {
+	if s.embeddedFS != nil {
+		if _, err := fs.Stat(s.embeddedFS, "index.html"); err == nil {
 			return true
 		}
 	}

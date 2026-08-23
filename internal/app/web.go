@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/SukeyByte/agent-gogo/internal/channels/webconsole"
+	frontend "github.com/SukeyByte/agent-gogo/web/frontend"
 	"github.com/SukeyByte/agent-gogo/internal/communication"
 	appconfig "github.com/SukeyByte/agent-gogo/internal/config"
 	"github.com/SukeyByte/agent-gogo/internal/contextbuilder"
@@ -116,6 +117,7 @@ func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Wri
 		LLMAPIKey:              cfg.LLM.APIKey,
 	}, channelID, sessionID, distDir)
 	apiServer.UseSessionStore(sqlite)
+	apiServer.UseEmbeddedDist(frontend.DistFS())
 	apiServer.UseAssets(assets.skills, assets.personas, assets.memories)
 	apiServer.UseConfigPath(opts.ConfigPath)
 
