@@ -70,7 +70,9 @@ func (e *ExecutionError) Unwrap() error {
 func NewGenericExecutor(options GenericExecutorOptions) *GenericExecutor {
 	maxSteps := options.MaxSteps
 	if maxSteps <= 0 {
-		maxSteps = 12
+		// Large coding tasks (write multiple files, patch, verify, finish)
+		// routinely need ~20 steps; 12 starved them into repair loops.
+		maxSteps = 30
 	}
 	interpreter := options.Observer
 	if interpreter == nil {
