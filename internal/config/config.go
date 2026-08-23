@@ -85,6 +85,7 @@ type SecurityConfig struct {
 	RequireConfirmHighRisk bool
 	AllowShell             bool
 	ShellAllowlist         []string
+	ShellTimeout           time.Duration
 }
 
 func Load(path string) (Config, error) {
@@ -399,6 +400,10 @@ func applyKeyValue(cfg *Config, section string, key string, value string) {
 			cfg.Communication.SessionID = value
 		}
 	case "security":
+		case "shell_timeout":
+			if seconds, ok := parsePositiveInt(value); ok {
+				cfg.Security.ShellTimeout = time.Duration(seconds) * time.Second
+			}
 		switch key {
 		case "require_confirm_high_risk":
 			cfg.Security.RequireConfirmHighRisk = parseBool(value)

@@ -205,6 +205,7 @@ func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQL
 		AllowShell:                cfg.Security.AllowShell,
 		ShellAllowlist:            cfg.Security.ShellAllowlist,
 		RequireConfirmationAtRisk: confirmationRisk(cfg),
+		ShellTimeout:              shellTimeout(cfg),
 	}
 	toolRuntime.UseSecurityPolicy(policy, confirmationGate)
 	browserEngine := newLazyBrowserEngine(cfg)

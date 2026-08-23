@@ -279,3 +279,11 @@ func connectMCPServers(ctx context.Context, cfg appconfig.Config, toolRuntime *t
 		}
 	}
 }
+
+// shellTimeout returns the per-command execution bound for shell tools.
+func shellTimeout(cfg appconfig.Config) time.Duration {
+	if cfg.Security.ShellTimeout > 0 {
+		return cfg.Security.ShellTimeout
+	}
+	return 120 * time.Second
+}

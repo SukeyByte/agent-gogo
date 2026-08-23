@@ -11,6 +11,11 @@ import (
 )
 
 func (r *Runtime) Call(ctx context.Context, req CallRequest) (CallResponse, error) {
+	if spec := r.specs[req.Name]; spec.RequiresShell && r.security.ShellTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.security.ShellTimeout)
+		defer cancel()
+	}
 	if err := ctx.Err(); err != nil {
 		return CallResponse{}, err
 	}

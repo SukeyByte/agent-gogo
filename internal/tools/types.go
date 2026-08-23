@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"time"
 	"context"
 	"errors"
 
@@ -52,6 +53,9 @@ type SecurityPolicy struct {
 	AllowShell                bool
 	ShellAllowlist            []string
 	RequireConfirmationAtRisk string
+	// ShellTimeout bounds each shell.run/test.run execution so blocking
+	// commands (e.g. servers, watchers) cannot hang a task forever.
+	ShellTimeout time.Duration
 }
 
 type ConfirmationRequest struct {

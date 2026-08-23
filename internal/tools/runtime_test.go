@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SukeyByte/agent-gogo/internal/domain"
 	"github.com/SukeyByte/agent-gogo/internal/store"
@@ -645,4 +646,26 @@ func execCommand(t *testing.T, dir string, name string, args ...string) string {
 		t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, string(data))
 	}
 	return string(data)
+}
+
+func TestRuntimeShellTimeoutKillsBlockingCommands(t *testing.T) {
+	ctx := context.Background()
+	runtime := NewBuiltinRuntime(nil, t.TempDir())
+	runtime.UseSecurityPolicy(SecurityPolicy{AllowShell: true, ShellTimeout: 1 * time.Second}, nil)
+
+	start := time.Now()
+	response, err := runtime.Call(ctx, CallRequest{
+		Name: "shell.run",
+		Args: map[string]any{"command": "sleep 30"},
+	})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("blocking command should be cut at ~1s, took %v", elapsed)
+	}
+	if response.ToolCall.Status != domain.ToolCallStatusFailed {
+		t.Fatalf("expected failed audit, got %s", response.ToolCall.Status)
+	}
 }

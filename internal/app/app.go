@@ -71,6 +71,7 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 		AllowShell:                cfg.Security.AllowShell,
 		ShellAllowlist:            cfg.Security.ShellAllowlist,
 		RequireConfirmationAtRisk: confirmationRisk(cfg),
+		ShellTimeout:              shellTimeout(cfg),
 	}, newConfirmationGate(writer))
 	browserEngine := newLazyBrowserEngine(cfg)
 	defer browserEngine.Close()
