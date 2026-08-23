@@ -20,6 +20,7 @@ type Config struct {
 	Communication CommunicationConfig
 	Security      SecurityConfig
 	Session       SessionConfig
+	MCPServers    []MCPServerConfig
 }
 
 type SessionConfig struct {
@@ -60,8 +61,19 @@ type StorageConfig struct {
 
 type RuntimeConfig struct {
 	MaxTasksPerProject int
+	MaxParallelTasks   int
 	TestCommand        string
 	ContextMaxChars    int
+}
+
+// MCPServerConfig declares one external MCP server the agent consumes tools
+// from. Exactly one of Command (stdio) or URL (streamable HTTP) is used.
+type MCPServerConfig struct {
+	Name    string
+	Command string
+	Args    []string
+	URL     string
+	Enabled bool
 }
 
 type CommunicationConfig struct {
@@ -128,6 +140,14 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.Runtime.ContextMaxChars <= 0 {
 		cfg.Runtime.ContextMaxChars = 60000
+	}
+	if cfg.Runtime.MaxParallelTasks <= 0 {
+		cfg.Runtime.MaxParallelTasks = 1
+	}
+	for i := range cfg.MCPServers {
+		if strings.TrimSpace(cfg.MCPServers[i].Name) == "" {
+			cfg.MCPServers[i].Name = "mcp-" + strconv.Itoa(i+1)
+		}
 	}
 	if cfg.Session.MaxIdle <= 0 {
 		cfg.Session.MaxIdle = 24 * time.Hour
@@ -205,12 +225,29 @@ func applyYAMLFile(cfg *Config, path string) error {
 
 	var section string
 	var lastKey string
+	var mcpEntry *MCPServerConfig
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		raw := scanner.Text()
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
+		}
+		if section == "mcp_servers" && strings.HasPrefix(line, "- ") {
+			item := strings.TrimSpace(strings.TrimPrefix(line, "- "))
+			// "key: value" items open a new server entry; bare values are
+			// args entries of the current server.
+			if key, value, ok := splitKeyValue(item); ok && isMCPServerField(key) {
+				cfg.MCPServers = append(cfg.MCPServers, MCPServerConfig{Enabled: true})
+				mcpEntry = &cfg.MCPServers[len(cfg.MCPServers)-1]
+				lastKey = key
+				applyMCPServerValue(mcpEntry, key, value)
+				continue
+			}
+			if mcpEntry != nil && lastKey == "args" {
+				mcpEntry.Args = append(mcpEntry.Args, expandValue(item))
+				continue
+			}
 		}
 		if strings.HasPrefix(line, "- ") {
 			applyListValue(cfg, section, lastKey, expandValue(strings.TrimSpace(strings.TrimPrefix(line, "- "))))
@@ -219,18 +256,50 @@ func applyYAMLFile(cfg *Config, path string) error {
 		if !strings.HasPrefix(raw, " ") && strings.HasSuffix(line, ":") {
 			section = strings.TrimSuffix(line, ":")
 			lastKey = ""
+			mcpEntry = nil
 			continue
 		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
+		key, value, ok := splitKeyValue(line)
+		if !ok {
 			continue
 		}
-		key := strings.TrimSpace(parts[0])
-		value := expandValue(parts[1])
 		lastKey = key
+		if section == "mcp_servers" && mcpEntry != nil {
+			applyMCPServerValue(mcpEntry, key, value)
+			continue
+		}
 		applyKeyValue(cfg, section, key, value)
 	}
 	return scanner.Err()
+}
+
+func splitKeyValue(line string) (string, string, bool) {
+	parts := strings.SplitN(line, ":", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	return strings.TrimSpace(parts[0]), expandValue(parts[1]), true
+}
+
+func isMCPServerField(key string) bool {
+	switch key {
+	case "name", "command", "url", "enabled":
+		return true
+	}
+	return false
+}
+
+func applyMCPServerValue(entry *MCPServerConfig, key string, value string) {
+	switch key {
+	case "name":
+		entry.Name = value
+	case "command":
+		entry.Command = expandPath(value)
+	case "url":
+		entry.URL = value
+	case "enabled":
+		entry.Enabled = value != "false"
+	}
 }
 
 func applyListValue(cfg *Config, section string, key string, value string) {
@@ -307,6 +376,10 @@ func applyKeyValue(cfg *Config, section string, key string, value string) {
 		}
 	case "runtime":
 		switch key {
+		case "max_parallel_tasks":
+			if n, ok := parsePositiveInt(value); ok {
+				cfg.Runtime.MaxParallelTasks = n
+			}
 		case "max_tasks_per_project":
 			if maxTasks, ok := parsePositiveInt(value); ok {
 				cfg.Runtime.MaxTasksPerProject = maxTasks

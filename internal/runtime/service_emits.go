@@ -59,9 +59,7 @@ func (s *Service) saveSessionContext(ctx context.Context, projectID string) {
 	if s.sessionSaver == nil || s.sessionID == "" {
 		return
 	}
-	decision := s.decisionByProjectID[projectID]
-	profile := s.profileByProjectID[projectID]
-	planningContext := s.contextByProjectID[projectID]
+	planningContext, decision, profile := s.getState(projectID)
 
 	decisionJSON, _ := json.Marshal(decision)
 	profileJSON, _ := json.Marshal(profile)

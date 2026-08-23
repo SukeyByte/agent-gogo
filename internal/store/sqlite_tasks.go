@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -370,4 +371,55 @@ func (s *SQLiteStore) ListTaskEvents(ctx context.Context, taskID string) ([]doma
 		events = append(events, event)
 	}
 	return events, rows.Err()
+}
+
+// ClaimTasks atomically transitions the given tasks from READY to
+// IN_PROGRESS and returns the claimed tasks. Tasks whose status changed in
+// the meantime are skipped, which is what makes concurrent claiming safe.
+func (s *SQLiteStore) ClaimTasks(ctx context.Context, taskIDs []string) ([]domain.Task, error) {
+	if len(taskIDs) == 0 {
+		return nil, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer rollback(tx)
+	claimed := make([]domain.Task, 0, len(taskIDs))
+	for _, id := range taskIDs {
+		task, err := getTaskTx(ctx, tx, id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return nil, err
+		}
+		if task.Status != domain.TaskStatusReady {
+			continue
+		}
+		if err := domain.ValidateTaskTransition(task.Status, domain.TaskStatusInProgress); err != nil {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+			string(domain.TaskStatusInProgress), formatTime(utcNow()), id, string(domain.TaskStatusReady)); err != nil {
+			return nil, err
+		}
+		task.Status = domain.TaskStatusInProgress
+		if err := insertTaskEventTx(ctx, tx, domain.TaskEvent{
+			ID:        newID(),
+			TaskID:    task.ID,
+			Type:      "task.status_changed",
+			FromState: domain.TaskStatusReady,
+			ToState:   domain.TaskStatusInProgress,
+			Message:   "task claimed for execution",
+			CreatedAt: utcNow(),
+		}); err != nil {
+			return nil, err
+		}
+		claimed = append(claimed, task)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return claimed, nil
 }

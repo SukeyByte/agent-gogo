@@ -14,6 +14,7 @@ import (
 	"github.com/SukeyByte/agent-gogo/internal/browser"
 	"github.com/SukeyByte/agent-gogo/internal/communication"
 	appconfig "github.com/SukeyByte/agent-gogo/internal/config"
+	"github.com/SukeyByte/agent-gogo/internal/mcp"
 	"github.com/SukeyByte/agent-gogo/internal/provider"
 	"github.com/SukeyByte/agent-gogo/internal/store"
 	"github.com/SukeyByte/agent-gogo/internal/tools"
@@ -229,4 +230,52 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// connectMCPServers dials every enabled MCP server from the config and
+// registers its tools into the tool runtime. Servers that fail to start are
+// logged and skipped so one broken server cannot take the agent down. The
+// returned closer shuts all clients down.
+func connectMCPServers(ctx context.Context, cfg appconfig.Config, toolRuntime *tools.Runtime, warn func(format string, args ...any)) func() {
+	clients := make([]*mcp.Client, 0, len(cfg.MCPServers))
+	for _, server := range cfg.MCPServers {
+		if !server.Enabled {
+			continue
+		}
+		var (
+			client *mcp.Client
+			err    error
+		)
+		switch {
+		case strings.TrimSpace(server.Command) != "":
+			client, err = mcp.DialStdio(ctx, server.Name, server.Command, server.Args)
+		case strings.TrimSpace(server.URL) != "":
+			client, err = mcp.DialHTTP(ctx, server.Name, server.URL, nil)
+		default:
+			err = fmt.Errorf("mcp server %s has neither command nor url", server.Name)
+		}
+		if err == nil {
+			err = client.Initialize(ctx)
+		}
+		if err != nil {
+			if warn != nil {
+				warn("Warning: MCP server %s unavailable (%v), skipping its tools\n", server.Name, err)
+			}
+			_ = client.Close()
+			continue
+		}
+		if err := toolRuntime.RegisterMCPTools(client); err != nil {
+			if warn != nil {
+				warn("Warning: MCP server %s registered no tools (%v)\n", server.Name, err)
+			}
+			_ = client.Close()
+			continue
+		}
+		clients = append(clients, client)
+	}
+	return func() {
+		for _, client := range clients {
+			_ = client.Close()
+		}
+	}
 }

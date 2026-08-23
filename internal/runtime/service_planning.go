@@ -48,18 +48,7 @@ func (s *Service) PlanProject(ctx context.Context, projectID string) ([]domain.T
 		planningContext = appendPlanningDiscovery(planningContext, discoveryResult)
 		planningContext = limitContextText(planningContext, s.contextMaxChars)
 	}
-	if s.contextByProjectID == nil {
-		s.contextByProjectID = map[string]string{}
-	}
-	s.contextByProjectID[project.ID] = planningContext
-	if s.decisionByProjectID == nil {
-		s.decisionByProjectID = map[string]chain.Decision{}
-	}
-	if s.profileByProjectID == nil {
-		s.profileByProjectID = map[string]intentpkg.Profile{}
-	}
-	s.decisionByProjectID[project.ID] = chainDecision
-	s.profileByProjectID[project.ID] = intentProfile
+	s.setState(project.ID, planningContext, chainDecision, intentProfile)
 	drafts, err := s.planner.PlanProject(ctx, planner.PlanRequest{
 		Project:       project,
 		UserInput:     project.Goal,

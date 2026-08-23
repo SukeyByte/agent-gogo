@@ -38,7 +38,8 @@ type APIServer struct {
 	personas   *persona.Registry
 	memories   *memory.Index
 	configPath string
-	usage     *provider.UsageTracker
+	usage      *provider.UsageTracker
+	queueStats func() any
 }
 
 func NewAPIServer(store Store, sender ChannelEventSender, hub *SSEHub, config ConfigView, channelID, sessionID, distDir string) *APIServer {
@@ -60,6 +61,12 @@ func (s *APIServer) UseSessionStore(sessions SessionStore) {
 
 func (s *APIServer) UseConfigPath(path string) {
 	s.configPath = path
+}
+
+// UseQueueStats registers the task queue stats provider exposed at
+// /api/queue. The provider returns a JSON-serializable snapshot.
+func (s *APIServer) UseQueueStats(provider func() any) {
+	s.queueStats = provider
 }
 
 // UseUsageTracker registers the LLM token usage tracker exposed at /api/tokens.
@@ -95,6 +102,7 @@ func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux.HandleFunc("/api/confirmation", s.handlePostConfirmation)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/tokens", s.handleTokens)
+	mux.HandleFunc("/api/queue", s.handleQueue)
 	mux.HandleFunc("/api/channels", s.handleListChannels)
 	mux.HandleFunc("/api/files/content", s.handleReadFile)
 	mux.HandleFunc("/api/files", s.handleListFiles)

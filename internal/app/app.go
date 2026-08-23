@@ -76,6 +76,10 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 	browserEngine := newLazyBrowserEngine(cfg)
 	defer browserEngine.Close()
 	toolRuntime.RegisterBrowserTools(browserEngine)
+	closeMCP := connectMCPServers(ctx, cfg, toolRuntime, func(format string, args ...any) {
+		_, _ = fmt.Fprintf(writer, format, args...)
+	})
+	defer closeMCP()
 
 	skillRegistry, err := skill.Discover(ctx, cfg.Storage.SkillRoots...)
 	if err != nil {
@@ -111,7 +115,7 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 		sqlite,
 		planner.NewLLMPlanner(loggedLLM, cfg.LLM.Model),
 		validator.NewCapabilityTaskValidator(validator.NewMinimalTaskValidator(), toolRuntime.CapabilityRegistry(), toolRuntime.CapabilityPolicy()),
-		scheduler.NewReadyScheduler(sqlite),
+		scheduler.NewClaimingScheduler(sqlite, sqlite),
 		executor.NewGenericExecutor(executor.GenericExecutorOptions{
 			Store:    sqlite,
 			Tools:    toolRuntime,
@@ -126,6 +130,7 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 	service.UseCommunication(cfg.Communication.ChannelID, cfg.Communication.SessionID, commRuntime)
 	service.UseContextAssets(function.NewCatalogRegistry(), skillRegistry, personaRegistry, memoryIndex, contextbuilder.NewSerializer(contextbuilder.SerializerOptions{}), logger)
 	service.UseContextBudget(cfg.Runtime.ContextMaxChars)
+	service.UseParallelism(cfg.Runtime.MaxParallelTasks)
 	service.UseMemoryPersistence(memoryPath)
 	service.UseSession(sessionSvc, sess.ID)
 	service.UseDiscoveryLoop(discovery.NewToolLoop(tools.NewBuiltinRuntime(nil, cfg.Storage.WorkspacePath)).UseMemory(memoryIndex))

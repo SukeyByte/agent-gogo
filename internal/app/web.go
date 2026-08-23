@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/SukeyByte/agent-gogo/internal/channels/webconsole"
-	frontend "github.com/SukeyByte/agent-gogo/web/frontend"
 	"github.com/SukeyByte/agent-gogo/internal/communication"
 	appconfig "github.com/SukeyByte/agent-gogo/internal/config"
 	"github.com/SukeyByte/agent-gogo/internal/contextbuilder"
@@ -37,6 +36,7 @@ import (
 	"github.com/SukeyByte/agent-gogo/internal/tester"
 	"github.com/SukeyByte/agent-gogo/internal/tools"
 	"github.com/SukeyByte/agent-gogo/internal/validator"
+	frontend "github.com/SukeyByte/agent-gogo/web/frontend"
 	"github.com/google/uuid"
 )
 
@@ -91,6 +91,17 @@ func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Wri
 			sender = bridge
 			bridge.swappable = swappable
 			bridge.cfgPath = opts.ConfigPath
+			// Channel events feed a deduplicating task queue instead of one
+			// unbounded goroutine per event.
+			queue := appruntime.NewTaskQueue(1)
+			queue.Start(func(taskCtx context.Context, projectID string) {
+				limit := cfg.Runtime.MaxTasksPerProject
+				if limit <= 0 {
+					limit = 50
+				}
+				_, _ = bridge.service.RunProjectTasks(taskCtx, projectID, limit)
+			})
+			bridge.queue = queue
 			defer bridge.Close()
 		}
 	} else {
@@ -122,6 +133,12 @@ func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Wri
 	}, channelID, sessionID, distDir)
 	apiServer.UseSessionStore(sqlite)
 	apiServer.UseUsageTracker(usageTracker)
+	apiServer.UseQueueStats(func() any {
+		if bridge != nil && bridge.queue != nil {
+			return bridge.queue.Stats()
+		}
+		return appruntime.QueueStats{}
+	})
 	apiServer.UseEmbeddedDist(frontend.DistFS())
 	apiServer.UseAssets(assets.skills, assets.personas, assets.memories)
 	apiServer.UseConfigPath(opts.ConfigPath)
@@ -188,6 +205,9 @@ func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQL
 	toolRuntime.UseSecurityPolicy(policy, confirmationGate)
 	browserEngine := newLazyBrowserEngine(cfg)
 	toolRuntime.RegisterBrowserTools(browserEngine)
+	closeMCP := connectMCPServers(ctx, cfg, toolRuntime, func(format string, args ...any) {
+		_, _ = fmt.Fprintf(os.Stderr, format, args...)
+	})
 
 	if assets.skills == nil || assets.personas == nil || assets.memories == nil {
 		loaded, err := loadWebAssets(ctx, cfg)
@@ -203,7 +223,7 @@ func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQL
 		sqlite,
 		planner.NewLLMPlanner(loggedLLM, cfg.LLM.Model),
 		validator.NewCapabilityTaskValidator(validator.NewMinimalTaskValidator(), toolRuntime.CapabilityRegistry(), toolRuntime.CapabilityPolicy()),
-		scheduler.NewReadyScheduler(sqlite),
+		scheduler.NewClaimingScheduler(sqlite, sqlite),
 		executor.NewGenericExecutor(executor.GenericExecutorOptions{
 			Store:    sqlite,
 			Tools:    toolRuntime,
@@ -218,6 +238,7 @@ func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQL
 	service.UseCommunication(channelID, sessionID, commRuntime)
 	service.UseContextAssets(function.NewCatalogRegistry(), assets.skills, assets.personas, assets.memories, contextbuilder.NewSerializer(contextbuilder.SerializerOptions{}), logger)
 	service.UseContextBudget(cfg.Runtime.ContextMaxChars)
+	service.UseParallelism(cfg.Runtime.MaxParallelTasks)
 	service.UseMemoryPersistence(assets.path)
 	discoveryRuntime := tools.NewBuiltinRuntime(nil, cfg.Storage.WorkspacePath)
 	discoveryRuntime.RegisterBrowserTools(browserEngine)
@@ -230,7 +251,10 @@ func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQL
 		policy:        policy,
 		confirmations: confirmationGate,
 		llm:           loggedLLM,
-		browserCloser: browserEngine.Close,
+		browserCloser: func() error {
+			closeMCP()
+			return browserEngine.Close()
+		},
 	}, nil
 }
 
@@ -243,6 +267,7 @@ type runtimeServiceBridge struct {
 	browserCloser func() error
 	swappable     *provider.SwappableLLMProvider
 	llm           provider.LLMProvider
+	queue         *appruntime.TaskQueue
 	cfgPath       string
 }
 
@@ -349,7 +374,13 @@ func (g *webToolConfirmationGate) confirmationScope(ctx context.Context, attempt
 }
 
 func (b *runtimeServiceBridge) Close() error {
-	if b == nil || b.browserCloser == nil {
+	if b == nil {
+		return nil
+	}
+	if b.queue != nil {
+		b.queue.Stop(5 * time.Second)
+	}
+	if b.browserCloser == nil {
 		return nil
 	}
 	return b.browserCloser()
@@ -498,6 +529,10 @@ func (b *runtimeServiceBridge) resumeSession(ctx context.Context, sessionID stri
 		}
 	}
 	if strings.TrimSpace(projectID) == "" {
+		return nil
+	}
+	if b.queue != nil {
+		b.queue.Submit(projectID)
 		return nil
 	}
 	go b.runReadyTasks(context.Background(), projectID)

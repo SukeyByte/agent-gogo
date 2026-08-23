@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	comm "github.com/SukeyByte/agent-gogo/internal/communication"
 
@@ -13,17 +14,44 @@ import (
 	"github.com/SukeyByte/agent-gogo/internal/executor"
 )
 
+// claimingScheduler is implemented by schedulers that atomically claim
+// tasks, which is required for concurrent execution.
+type claimingScheduler interface {
+	ClaimNextReadyTasks(ctx context.Context, projectID string, limit int) ([]domain.Task, error)
+}
+
+// claimNextTask returns one atomically claimed task, or sql.ErrNoRows.
+func (s *Service) claimNextTask(ctx context.Context, projectID string) (domain.Task, error) {
+	if claimer, ok := s.scheduler.(claimingScheduler); ok {
+		claimed, err := claimer.ClaimNextReadyTasks(ctx, projectID, 1)
+		if err != nil {
+			return domain.Task{}, err
+		}
+		if len(claimed) == 0 {
+			return domain.Task{}, sql.ErrNoRows
+		}
+		return claimed[0], nil
+	}
+	return s.scheduler.NextReadyTask(ctx, projectID)
+}
+
 func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunResult, error) {
 	if err := ctx.Err(); err != nil {
 		return TaskRunResult{}, err
 	}
-	task, err := s.scheduler.NextReadyTask(ctx, projectID)
+	task, err := s.claimNextTask(ctx, projectID)
 	if err != nil {
 		return TaskRunResult{}, err
 	}
 	if err := s.log(ctx, "scheduler.ready", task); err != nil {
 		return TaskRunResult{}, err
 	}
+	return s.runClaimedTask(ctx, projectID, task)
+}
+
+// runClaimedTask drives one already-claimed task through the full
+// execute -> test -> review pipeline. Safe to call from multiple goroutines.
+func (s *Service) runClaimedTask(ctx context.Context, projectID string, task domain.Task) (TaskRunResult, error) {
 	if err := s.emitTaskProgress(ctx, projectID, task, domain.TaskStatusInProgress, "Task started: "+task.Title); err != nil {
 		return TaskRunResult{}, err
 	}
@@ -31,18 +59,14 @@ func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunRes
 	if err != nil {
 		return TaskRunResult{}, err
 	}
-	decision := s.decisionByProjectID[projectID]
-	profile := s.profileByProjectID[projectID]
+	_, decision, profile := s.getState(projectID)
 	taskContext, err := s.buildRuntimeContext(ctx, project, task.ID, decision, profile)
 	if err != nil {
 		return TaskRunResult{}, err
 	}
-	if s.contextByProjectID == nil {
-		s.contextByProjectID = map[string]string{}
-	}
-	s.contextByProjectID[projectID] = taskContext
+	s.setState(projectID, taskContext, decision, profile)
 	if consumer, ok := s.executor.(runtimeContextConsumer); ok {
-		consumer.UseRuntimeContext(projectID, s.contextByProjectID[projectID])
+		consumer.UseRuntimeContext(projectID, taskContext)
 	}
 	executed, err := s.executor.Execute(ctx, task)
 	if err != nil {
@@ -120,6 +144,9 @@ func (s *Service) RunProjectTasks(ctx context.Context, projectID string, maxTask
 	}
 	if maxTasks <= 0 {
 		maxTasks = 50
+	}
+	if s.parallelism > 1 {
+		return s.runProjectTasksParallel(ctx, projectID, maxTasks)
 	}
 	if err := s.emit(ctx, comm.NewProgressIntent(s.communicationChannel, "Project run started", map[string]any{
 		"project_id": projectID,
@@ -405,4 +432,107 @@ func (s *Service) HandleUserConfirmation(ctx context.Context, confirmation UserC
 
 type runtimeContextConsumer interface {
 	UseRuntimeContext(projectID string, contextText string)
+}
+
+// runProjectTasksParallel executes up to s.parallelism tasks of a project
+// concurrently. Tasks are claimed atomically, so the same task can never run
+// twice; single-task failures queue repair work and the run continues.
+func (s *Service) runProjectTasksParallel(ctx context.Context, projectID string, maxTasks int) (int, error) {
+	if err := s.emit(ctx, comm.NewProgressIntent(s.communicationChannel, "Project run started", map[string]any{
+		"project_id": projectID,
+		"status":     "RUNNING",
+		"parallel":   s.parallelism,
+	}), projectID); err != nil {
+		return 0, err
+	}
+	claimer, ok := s.scheduler.(claimingScheduler)
+	if !ok {
+		// No atomic claiming available; fall back to sequential execution.
+		s.parallelism = 1
+		return s.RunProjectTasks(ctx, projectID, maxTasks)
+	}
+	workers := s.parallelism
+	if workers > 8 {
+		workers = 8
+	}
+	var (
+		wg         sync.WaitGroup
+		ranMu      sync.Mutex
+		ran        int
+		sem        = make(chan struct{}, workers)
+		iterations = 0
+	)
+	for iterations < maxTasks*2 {
+		if ranMu.Lock(); ran >= maxTasks {
+			ranMu.Unlock()
+			break
+		} else {
+			ranMu.Unlock()
+		}
+		claimed, err := claimer.ClaimNextReadyTasks(ctx, projectID, workers)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			wg.Wait()
+			return ran, err
+		}
+		if len(claimed) == 0 {
+			// Nothing claimable: wait for in-flight work; finishing tasks may
+			// unblock dependents, otherwise finalize the project run.
+			wg.Wait()
+			claimed, err = claimer.ClaimNextReadyTasks(ctx, projectID, workers)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return ran, err
+			}
+			if len(claimed) == 0 {
+				return s.finalizeProjectRun(ctx, projectID, ran)
+			}
+		}
+		for _, task := range claimed {
+			iterations++
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(task domain.Task) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				_, err := s.runClaimedTask(ctx, projectID, task)
+				ranMu.Lock()
+				ran++
+				ranMu.Unlock()
+				if err != nil {
+					s.log(context.Background(), "parallel.task.failed", map[string]any{
+						"task_id": task.ID, "title": task.Title, "error": err.Error(),
+					})
+				}
+			}(task)
+		}
+	}
+	wg.Wait()
+	if ran >= maxTasks {
+		return ran, fmt.Errorf("max task limit reached: %d", maxTasks)
+	}
+	return s.finalizeProjectRun(ctx, projectID, ran)
+}
+
+// finalizeProjectRun applies the shared end-of-run logic: block dependents of
+// blocked tasks, pause on incomplete work, or mark the project completed.
+func (s *Service) finalizeProjectRun(ctx context.Context, projectID string, ranTasks int) (int, error) {
+	if blocked, blockErr := s.blockTasksWaitingOnBlockedDependencies(ctx, projectID); blockErr != nil {
+		return ranTasks, blockErr
+	} else if blocked > 0 {
+		return ranTasks, nil
+	}
+	summary, incomplete, summaryErr := s.projectIncompleteSummary(ctx, projectID)
+	if summaryErr != nil {
+		return ranTasks, summaryErr
+	}
+	if incomplete {
+		s.emitProjectBlocked(ctx, projectID, fmt.Sprintf("Project run paused after %d task(s): %s", ranTasks, summary))
+		return ranTasks, nil
+	}
+	if _, err := s.store.UpdateProjectStatus(ctx, projectID, domain.ProjectStatusCompleted); err != nil {
+		return ranTasks, err
+	}
+	if err := s.emit(ctx, comm.NewDoneIntent(s.communicationChannel, fmt.Sprintf("Project run finished: %d task(s) completed", ranTasks)), projectID); err != nil {
+		return ranTasks, err
+	}
+	return ranTasks, nil
 }

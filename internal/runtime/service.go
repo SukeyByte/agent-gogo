@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/SukeyByte/agent-gogo/internal/chain"
 	comm "github.com/SukeyByte/agent-gogo/internal/communication"
@@ -81,9 +82,11 @@ type Service struct {
 	contextSerializer    contextbuilder.ContextSerializer
 	logger               observability.Logger
 	activePersonas       []contextbuilder.Persona
+	stateMu              sync.RWMutex
 	contextByProjectID   map[string]string
 	decisionByProjectID  map[string]chain.Decision
 	profileByProjectID   map[string]intentpkg.Profile
+	parallelism          int
 	contextMaxChars      int
 	discovery            discovery.Loop
 }
@@ -142,6 +145,29 @@ type TaskRunResult struct {
 	TestResult   domain.TestResult
 	ReviewResult domain.ReviewResult
 	Events       []domain.TaskEvent
+}
+
+func (s *Service) setState(projectID string, contextText string, decision chain.Decision, profile intentpkg.Profile) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.contextByProjectID == nil {
+		s.contextByProjectID = map[string]string{}
+	}
+	if s.decisionByProjectID == nil {
+		s.decisionByProjectID = map[string]chain.Decision{}
+	}
+	if s.profileByProjectID == nil {
+		s.profileByProjectID = map[string]intentpkg.Profile{}
+	}
+	s.contextByProjectID[projectID] = contextText
+	s.decisionByProjectID[projectID] = decision
+	s.profileByProjectID[projectID] = profile
+}
+
+func (s *Service) getState(projectID string) (string, chain.Decision, intentpkg.Profile) {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.contextByProjectID[projectID], s.decisionByProjectID[projectID], s.profileByProjectID[projectID]
 }
 
 func NewService(store Store) *Service {
@@ -207,6 +233,14 @@ func (s *Service) UseContextAssets(functions function.Registry, skills *skill.Re
 
 func (s *Service) UseMemoryPersistence(path string) {
 	s.memoryPersistPath = strings.TrimSpace(path)
+}
+
+// UseParallelism sets how many tasks of one project may run at once.
+// Values below 1 keep sequential execution.
+func (s *Service) UseParallelism(workers int) {
+	if workers > 0 {
+		s.parallelism = workers
+	}
 }
 
 func (s *Service) UseContextBudget(maxChars int) {

@@ -306,12 +306,12 @@ func (s *APIServer) handleDeleteMemory(w http.ResponseWriter, r *http.Request) {
 // --- Skill GitHub search + install handlers ---
 
 type githubRepoItem struct {
-	Owner       string `json:"owner"`
-	Repo        string `json:"repo"`
-	FullName    string `json:"full_name"`
-	Description string `json:"description"`
-	Stars       int    `json:"stars"`
-	HTMLURL     string `json:"html_url"`
+	Owner         string `json:"owner"`
+	Repo          string `json:"repo"`
+	FullName      string `json:"full_name"`
+	Description   string `json:"description"`
+	Stars         int    `json:"stars"`
+	HTMLURL       string `json:"html_url"`
 	DefaultBranch string `json:"default_branch"`
 }
 
@@ -359,13 +359,13 @@ func (s *APIServer) handleSearchGithubSkills(w http.ResponseWriter, r *http.Requ
 	}
 	var result struct {
 		Items []struct {
-			Owner         struct{ Login string } `json:"owner"`
-			Name          string                  `json:"name"`
-			FullName      string                  `json:"full_name"`
-			Description   string                  `json:"description"`
-			StargazersCount int                   `json:"stargazers_count"`
-			HTMLURL       string                  `json:"html_url"`
-			DefaultBranch string                  `json:"default_branch"`
+			Owner           struct{ Login string } `json:"owner"`
+			Name            string                 `json:"name"`
+			FullName        string                 `json:"full_name"`
+			Description     string                 `json:"description"`
+			StargazersCount int                    `json:"stargazers_count"`
+			HTMLURL         string                 `json:"html_url"`
+			DefaultBranch   string                 `json:"default_branch"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {

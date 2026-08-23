@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/SukeyByte/agent-gogo/internal/contextbuilder"
 	"github.com/SukeyByte/agent-gogo/internal/textutil"
@@ -36,6 +37,7 @@ type Item struct {
 }
 
 type Index struct {
+	mu          sync.Mutex
 	items       map[string]Item
 	persistPath string
 }
@@ -58,6 +60,8 @@ func NewPersistentIndex(ctx context.Context, path string) (*Index, error) {
 }
 
 func (i *Index) Add(item Item) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	if i.items == nil {
 		i.items = map[string]Item{}
 	}
@@ -66,10 +70,14 @@ func (i *Index) Add(item Item) {
 }
 
 func (i *Index) Remove(id string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	delete(i.items, id)
 }
 
 func (i *Index) Items() []Item {
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	items := make([]Item, 0, len(i.items))
 	for _, item := range i.items {
 		items = append(items, item)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/SukeyByte/agent-gogo/internal/domain"
 	"github.com/SukeyByte/agent-gogo/internal/llmjson"
@@ -42,6 +43,7 @@ type GenericExecutor struct {
 	model              string
 	observer           *observer.Interpreter
 	maxSteps           int
+	contextMu          sync.Mutex
 	contextByProjectID map[string]string
 }
 
@@ -85,7 +87,15 @@ func NewGenericExecutor(options GenericExecutorOptions) *GenericExecutor {
 	}
 }
 
+func (e *GenericExecutor) runtimeContextFor(projectID string) string {
+	e.contextMu.Lock()
+	defer e.contextMu.Unlock()
+	return e.contextByProjectID[projectID]
+}
+
 func (e *GenericExecutor) UseRuntimeContext(projectID string, contextText string) {
+	e.contextMu.Lock()
+	defer e.contextMu.Unlock()
 	if e.contextByProjectID == nil {
 		e.contextByProjectID = map[string]string{}
 	}
@@ -99,9 +109,15 @@ func (e *GenericExecutor) Execute(ctx context.Context, task domain.Task) (Result
 	if e.store == nil {
 		return Result{}, errors.New("generic executor store is required")
 	}
-	inProgress, err := e.store.TransitionTask(ctx, task.ID, domain.TaskStatusInProgress, "generic executor started action loop")
-	if err != nil {
-		return Result{}, err
+	// The scheduler may already have claimed the task (READY->IN_PROGRESS)
+	// for concurrent execution; only transition when it is still unclaimed.
+	inProgress := task
+	if task.Status != domain.TaskStatusInProgress {
+		claimed, err := e.store.TransitionTask(ctx, task.ID, domain.TaskStatusInProgress, "generic executor started action loop")
+		if err != nil {
+			return Result{}, err
+		}
+		inProgress = claimed
 	}
 	attempt, err := e.store.CreateTaskAttempt(ctx, task.ID)
 	if err != nil {
@@ -226,7 +242,7 @@ func (e *GenericExecutor) nextAction(ctx context.Context, task domain.Task, atte
 		},
 		"attempt_id":      attempt.ID,
 		"step":            step,
-		"runtime_context": e.contextByProjectID[task.ProjectID],
+		"runtime_context": e.runtimeContextFor(task.ProjectID),
 		"available_tools": toolSchemas(e.tools.ListSpecs()),
 		"prior_events":    events,
 	})

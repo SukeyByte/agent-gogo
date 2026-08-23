@@ -527,11 +527,22 @@ func extractID(path, prefix string) string {
 	return strings.TrimSuffix(id, "/")
 }
 
-
 func (s *APIServer) handleTokens(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
 	writeJSON(w, s.usage.Snapshot())
+}
+
+func (s *APIServer) handleQueue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	if s.queueStats == nil {
+		writeJSON(w, map[string]any{"queued_projects": 0, "running": 0, "workers": 0})
+		return
+	}
+	writeJSON(w, s.queueStats())
 }
