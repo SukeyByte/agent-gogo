@@ -116,9 +116,13 @@ export const api = {
     return withFallback(() => request<Observation[]>(`/attempts/${attemptId}/observations`), mockObservations[attemptId] || [])
   },
 
-  // Test results — mock only (no backend endpoint yet)
-  async listTestResults(attemptId: string): Promise<TestResult[]> { return mockTestResults[attemptId] || [] },
-  async listReviewResults(attemptId: string): Promise<ReviewResult[]> { return mockReviewResults[attemptId] || [] },
+  // Test / review results
+  async listTestResults(attemptId: string): Promise<TestResult[]> {
+    return withFallback(() => request<TestResult[]>(`/attempts/${attemptId}/test-results`), mockTestResults[attemptId] || [])
+  },
+  async listReviewResults(attemptId: string): Promise<ReviewResult[]> {
+    return withFallback(() => request<ReviewResult[]>(`/attempts/${attemptId}/review-results`), mockReviewResults[attemptId] || [])
+  },
 
   // Artifacts
   async listArtifacts(projectId: string): Promise<Artifact[]> {
@@ -192,15 +196,17 @@ export const api = {
     await post(`/memory/${id}/delete`, {})
   },
 
-  // Channels — mock only
-  async listChannels(): Promise<ChannelInfo[]> { return mockChannels },
+  // Channels
+  async listChannels(): Promise<ChannelInfo[]> {
+    return withFallback(() => request<ChannelInfo[]>('/channels'), mockChannels)
+  },
 
   // Config — read from API, save via channel command
   async getConfig(): Promise<AppConfig> {
     return withFallback(async (): Promise<AppConfig> => {
       const raw = await request<Record<string, any>>('/config')
       return {
-        llm: { provider: raw.llm_provider || '', model: raw.llm_model || '', base_url: raw.llm_base_url || '', api_key: raw.llm_api_key || '', timeout: raw.llm_timeout_seconds || 0 },
+        llm: { provider: raw.llm_provider || '', model: raw.llm_model || '', base_url: raw.llm_base_url || '', api_key: '', timeout: raw.llm_timeout_seconds || 0 },
         embedding: { provider: '', model: '', base_url: '', api_key: '' },
         browser: { provider: '', mcp_url: '', headless: !!raw.browser_headless, timeout: raw.browser_timeout_seconds || 0 },
         storage: {
@@ -222,8 +228,14 @@ export const api = {
     await post('/config', config as unknown as Record<string, unknown>)
   },
 
-  // Files — mock only
-  async listFiles(_path?: string): Promise<FileEntry[]> { return mockFiles },
+  // Files
+  async listFiles(path?: string): Promise<FileEntry[]> {
+    const suffix = path ? `?path=${encodeURIComponent(path)}` : ''
+    return withFallback(() => request<FileEntry[]>(`/files${suffix}`), mockFiles)
+  },
+  async readFile(path: string): Promise<{ path: string; content: string; size: number }> {
+    return request<{ path: string; content: string; size: number }>(`/files/content?path=${encodeURIComponent(path)}`)
+  },
 
   // Sessions
   async listSessions(): Promise<Session[]> {

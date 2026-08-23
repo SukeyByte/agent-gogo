@@ -83,6 +83,25 @@ type jsonObservation struct {
 	CreatedAt   string `json:"created_at"`
 }
 
+type jsonTestResult struct {
+	ID          string `json:"id"`
+	AttemptID   string `json:"attempt_id"`
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	Output      string `json:"output"`
+	EvidenceRef string `json:"evidence_ref"`
+	CreatedAt   string `json:"created_at"`
+}
+
+type jsonReviewResult struct {
+	ID          string `json:"id"`
+	AttemptID   string `json:"attempt_id"`
+	Status      string `json:"status"`
+	Summary     string `json:"summary"`
+	EvidenceRef string `json:"evidence_ref"`
+	CreatedAt   string `json:"created_at"`
+}
+
 type jsonArtifact struct {
 	ID          string `json:"id"`
 	AttemptID   string `json:"attempt_id"`
@@ -183,6 +202,20 @@ func observationToJSON(o domain.Observation) jsonObservation {
 	return jsonObservation{
 		ID: o.ID, AttemptID: o.AttemptID, ToolCallID: o.ToolCallID, Type: o.Type,
 		Summary: o.Summary, EvidenceRef: o.EvidenceRef, Payload: o.Payload, CreatedAt: formatTime(o.CreatedAt),
+	}
+}
+
+func testResultToJSON(result domain.TestResult) jsonTestResult {
+	return jsonTestResult{
+		ID: result.ID, AttemptID: result.AttemptID, Name: result.Name, Status: string(result.Status),
+		Output: result.Output, EvidenceRef: result.EvidenceRef, CreatedAt: formatTime(result.CreatedAt),
+	}
+}
+
+func reviewResultToJSON(result domain.ReviewResult) jsonReviewResult {
+	return jsonReviewResult{
+		ID: result.ID, AttemptID: result.AttemptID, Status: string(result.Status),
+		Summary: result.Summary, EvidenceRef: result.EvidenceRef, CreatedAt: formatTime(result.CreatedAt),
 	}
 }
 
@@ -299,6 +332,36 @@ func (s *APIServer) handleListObservations(w http.ResponseWriter, r *http.Reques
 	out := make([]jsonObservation, len(obs))
 	for i, o := range obs {
 		out[i] = observationToJSON(o)
+	}
+	writeJSON(w, out)
+}
+
+func (s *APIServer) handleListTestResults(w http.ResponseWriter, r *http.Request) {
+	attemptID := extractID(r.URL.Path, "/api/attempts/")
+	attemptID = strings.TrimSuffix(attemptID, "/test-results")
+	results, err := s.store.ListTestResultsByAttempt(r.Context(), attemptID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]jsonTestResult, len(results))
+	for i, result := range results {
+		out[i] = testResultToJSON(result)
+	}
+	writeJSON(w, out)
+}
+
+func (s *APIServer) handleListReviewResults(w http.ResponseWriter, r *http.Request) {
+	attemptID := extractID(r.URL.Path, "/api/attempts/")
+	attemptID = strings.TrimSuffix(attemptID, "/review-results")
+	results, err := s.store.ListReviewResultsByAttempt(r.Context(), attemptID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]jsonReviewResult, len(results))
+	for i, result := range results {
+		out[i] = reviewResultToJSON(result)
 	}
 	writeJSON(w, out)
 }

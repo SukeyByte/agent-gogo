@@ -565,6 +565,56 @@ func TestBuiltinRuntimeWritesDocumentAndMemory(t *testing.T) {
 	}
 }
 
+func TestBuiltinRuntimeRecordsDocumentArtifact(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	project, err := sqlite.CreateProject(ctx, domain.Project{Name: "Artifacts", Goal: "write doc"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task, err := sqlite.CreateTask(ctx, domain.Task{
+		ProjectID:          project.ID,
+		Title:              "Write docs/result.md",
+		AcceptanceCriteria: []string{"document artifact is recorded"},
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	attempt, err := sqlite.CreateTaskAttempt(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("create attempt: %v", err)
+	}
+
+	runtime := NewBuiltinRuntime(sqlite, root)
+	if _, err := runtime.Call(ctx, CallRequest{
+		AttemptID: attempt.ID,
+		Name:      "document.write",
+		Args: map[string]any{
+			"path":    "docs/result.md",
+			"content": "# Result\n",
+			"summary": "result doc",
+		},
+	}); err != nil {
+		t.Fatalf("write document: %v", err)
+	}
+	artifacts, err := sqlite.ListArtifactsByProject(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("expected one artifact, got %#v", artifacts)
+	}
+	if artifacts[0].AttemptID != attempt.ID || artifacts[0].ProjectID != project.ID || artifacts[0].Path != "docs/result.md" || artifacts[0].Type != "document" {
+		t.Fatalf("unexpected artifact %#v", artifacts[0])
+	}
+}
+
 func execCommand(t *testing.T, dir string, name string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(name, args...)

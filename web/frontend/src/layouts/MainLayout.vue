@@ -8,6 +8,7 @@ const sidebarOpen = ref(true)
 const navItems = [
   { path: '/', icon: '◈', label: 'Dashboard' },
   { path: '/chat', icon: '◐', label: 'Chat' },
+  { path: '/sessions', icon: '⊚', label: 'Sessions' },
   { path: '/projects', icon: '▣', label: 'Projects' },
   { path: '/browser', icon: '◎', label: 'Browser' },
   { path: '/skills', icon: '◇', label: 'Skills' },

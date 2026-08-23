@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/SukeyByte/agent-gogo/internal/chain"
+	comm "github.com/SukeyByte/agent-gogo/internal/communication"
 	"github.com/SukeyByte/agent-gogo/internal/contextbuilder"
 	"github.com/SukeyByte/agent-gogo/internal/domain"
 	"github.com/SukeyByte/agent-gogo/internal/function"
@@ -43,14 +44,7 @@ func (s *Service) buildRuntimeContext(ctx context.Context, project domain.Projec
 		SecurityRules: []contextbuilder.Message{
 			{ID: "security-001", Role: "system", Text: "All side effects must go through Tool Runtime or Communication Runtime. Do not expose API keys.", VersionHash: "security-v1"},
 		},
-		ChannelCapabilities: []contextbuilder.ChannelCapability{
-			{
-				ChannelType:           s.communicationChannel,
-				Capabilities:          []string{"send_message", "notify_done", "ask_confirmation"},
-				SupportedMessageTypes: []string{"text", "artifact"},
-				SupportsConfirmation:  true,
-			},
-		},
+		ChannelCapabilities:        s.channelCapabilitiesForContext(ctx),
 		IntentProfile:              profile.ContextProfile(),
 		ActiveCapabilities:         capabilitySpecs(assets.ActiveFunctionSchemas),
 		ActiveFunctionSchemas:      assets.ActiveFunctionSchemas,
@@ -82,6 +76,71 @@ func (s *Service) buildRuntimeContext(ctx context.Context, project domain.Projec
 	return text, nil
 }
 
+type channelCapabilityProvider interface {
+	ChannelCapability(ctx context.Context, channelID string) (comm.ChannelCapability, error)
+}
+
+func (s *Service) channelCapabilitiesForContext(ctx context.Context) []contextbuilder.ChannelCapability {
+	if provider, ok := s.communication.(channelCapabilityProvider); ok && strings.TrimSpace(s.communicationChannel) != "" {
+		capability, err := provider.ChannelCapability(ctx, s.communicationChannel)
+		if err == nil {
+			return []contextbuilder.ChannelCapability{{
+				ChannelType:           capability.ChannelType,
+				Capabilities:          communicationCapabilityNames(capability),
+				SupportedMessageTypes: append([]string(nil), capability.SupportedMessageTypes...),
+				SupportedInteractions: append([]string(nil), capability.SupportedInteractions...),
+				MaxMessageLength:      capability.MaxMessageLength,
+				MaxButtons:            capability.MaxButtons,
+				FileSizeLimit:         capability.FileSizeLimit,
+				SupportsAsyncReply:    capability.SupportsAsyncReply,
+				SupportsSyncPrompt:    capability.SupportsSyncPrompt,
+				SupportsConfirmation:  capability.SupportsConfirmation,
+				SupportsFileRequest:   capability.SupportsFileRequest,
+				SupportsStreaming:     capability.SupportsStreaming,
+				PolicyLimits:          copyStringMap(capability.PolicyLimits),
+			}}
+		}
+	}
+	return []contextbuilder.ChannelCapability{{
+		ChannelType:           s.communicationChannel,
+		Capabilities:          []string{"send_message", "notify_done", "ask_confirmation"},
+		SupportedMessageTypes: []string{"text", "artifact"},
+		SupportsConfirmation:  true,
+	}}
+}
+
+func communicationCapabilityNames(capability comm.ChannelCapability) []string {
+	names := []string{"send_message"}
+	if capability.SupportsStreaming {
+		names = append(names, "send_progress")
+	}
+	if capability.SupportsConfirmation {
+		names = append(names, "ask_confirmation")
+	}
+	if capability.SupportsFileRequest {
+		names = append(names, "request_attachment")
+	}
+	for _, messageType := range capability.SupportedMessageTypes {
+		if messageType == "artifact" {
+			names = append(names, "send_artifact")
+			break
+		}
+	}
+	names = append(names, "notify_done", "notify_blocked")
+	return sortedUniqueStrings(names)
+}
+
+func copyStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
 func (s *Service) searchSkills(ctx context.Context, project domain.Project, profile intentpkg.Profile, decision chain.Decision) ([]contextbuilder.SkillInstruction, []contextbuilder.SkillPackageRef, error) {
 	if s.skills == nil {
 		return nil, nil, nil
@@ -90,12 +149,6 @@ func (s *Service) searchSkills(ctx context.Context, project domain.Project, prof
 	cards, err := s.skills.Search(ctx, query, 4)
 	if err != nil {
 		return nil, nil, err
-	}
-	if len(cards) == 0 {
-		cards, err = s.skills.Search(ctx, "story writing plot chapter fiction", 4)
-		if err != nil {
-			return nil, nil, err
-		}
 	}
 	if err := s.log(ctx, "skill.search", cards); err != nil {
 		return nil, nil, err

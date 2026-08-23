@@ -50,6 +50,7 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 	migrations := []string{
 		"0001_m1_domain_store.sql",
 		"0002_sessions.sql",
+		"0003_communication_outbox.sql",
 	}
 	for _, name := range migrations {
 		sql, err := loadMigration(name)

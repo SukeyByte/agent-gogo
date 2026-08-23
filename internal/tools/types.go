@@ -55,6 +55,7 @@ type SecurityPolicy struct {
 }
 
 type ConfirmationRequest struct {
+	AttemptID string
 	ToolName  string
 	RiskLevel string
 	Args      map[string]any

@@ -78,6 +78,9 @@ func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux.HandleFunc("/api/message", s.handlePostMessage)
 	mux.HandleFunc("/api/confirmation", s.handlePostConfirmation)
 	mux.HandleFunc("/api/config", s.handleConfig)
+	mux.HandleFunc("/api/channels", s.handleListChannels)
+	mux.HandleFunc("/api/files/content", s.handleReadFile)
+	mux.HandleFunc("/api/files", s.handleListFiles)
 	mux.HandleFunc("/api/skills/search-github", s.handleSearchGithubSkills)
 	mux.HandleFunc("/api/skills/github-files", s.handleListGithubSkillFiles)
 	mux.HandleFunc("/api/skills/install", s.handleInstallSkill)
@@ -135,6 +138,10 @@ func (s *APIServer) apiAttemptRoutes(w http.ResponseWriter, r *http.Request) {
 		s.handleListToolCalls(w, r)
 	} else if strings.HasSuffix(path, "/observations") {
 		s.handleListObservations(w, r)
+	} else if strings.HasSuffix(path, "/test-results") {
+		s.handleListTestResults(w, r)
+	} else if strings.HasSuffix(path, "/review-results") {
+		s.handleListReviewResults(w, r)
 	} else {
 		http.NotFound(w, r)
 	}

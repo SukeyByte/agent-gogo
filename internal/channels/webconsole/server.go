@@ -20,6 +20,8 @@ type Store interface {
 	ListTaskEvents(ctx context.Context, taskID string) ([]domain.TaskEvent, error)
 	ListObservationsByAttempt(ctx context.Context, attemptID string) ([]domain.Observation, error)
 	ListToolCallsByAttempt(ctx context.Context, attemptID string) ([]domain.ToolCall, error)
+	ListTestResultsByAttempt(ctx context.Context, attemptID string) ([]domain.TestResult, error)
+	ListReviewResultsByAttempt(ctx context.Context, attemptID string) ([]domain.ReviewResult, error)
 	ListArtifactsByProject(ctx context.Context, projectID string) ([]domain.Artifact, error)
 }
 

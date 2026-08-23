@@ -12,7 +12,7 @@ import (
 func (s *APIServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, s.config)
+		writeJSON(w, s.publicConfig())
 	case http.MethodPost, http.MethodPatch:
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -36,7 +36,7 @@ func (s *APIServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		s.persistConfig()
+		s.persistConfig(payload)
 		writeJSON(w, map[string]string{"status": "accepted"})
 	default:
 		writeJSONError(w, http.StatusMethodNotAllowed, "GET, POST, or PATCH only")
@@ -50,7 +50,7 @@ func (s *APIServer) handleConfigCommand(w http.ResponseWriter, r *http.Request, 
 	}
 	raw := strings.TrimSpace(strings.TrimPrefix(text, "/config"))
 	if raw == "" {
-		writeJSON(w, s.config)
+		writeJSON(w, s.publicConfig())
 		return true
 	}
 	var body map[string]any
@@ -78,6 +78,14 @@ func (s *APIServer) handleConfigCommand(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted", "type": "config.update"})
 	return true
+}
+
+func (s *APIServer) publicConfig() ConfigView {
+	cfg := s.config
+	if strings.TrimSpace(cfg.LLMAPIKey) != "" {
+		cfg.LLMAPIKey = ""
+	}
+	return cfg
 }
 
 func flattenConfigPayload(body map[string]any) map[string]string {
@@ -228,7 +236,9 @@ func splitCommaList(raw string) []string {
 }
 
 // persistConfig writes the current ConfigView to the config file as a simple YAML patch.
-func (s *APIServer) persistConfig() {
+// It only persists a new LLM API key when the user explicitly submitted one; this
+// prevents environment-provided secrets from being copied into config.yaml.
+func (s *APIServer) persistConfig(payload map[string]string) {
 	if s.configPath == "" {
 		return
 	}
@@ -237,7 +247,9 @@ func (s *APIServer) persistConfig() {
 	sb.WriteString("  provider: " + s.config.LLMProvider + "\n")
 	sb.WriteString("  model: " + s.config.LLMModel + "\n")
 	sb.WriteString("  base_url: " + s.config.LLMBaseURL + "\n")
-	sb.WriteString("  api_key: " + s.config.LLMAPIKey + "\n")
+	if strings.TrimSpace(payload["llm_api_key"]) != "" {
+		sb.WriteString("  api_key: " + s.config.LLMAPIKey + "\n")
+	}
 	sb.WriteString("  timeout_seconds: " + strconv.Itoa(s.config.LLMTimeoutSeconds) + "\n")
 	sb.WriteString("browser:\n")
 	sb.WriteString("  headless: " + strconv.FormatBool(s.config.BrowserHeadless) + "\n")

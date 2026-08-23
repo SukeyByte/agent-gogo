@@ -106,6 +106,7 @@ func (r *Runtime) resolveCapability(ctx context.Context, spec Spec, req CallRequ
 			return fmt.Errorf("%w: %s", ErrConfirmationRequired, req.Name)
 		}
 		approved, err := r.confirmationGate.Confirm(ctx, ConfirmationRequest{
+			AttemptID: req.AttemptID,
 			ToolName:  req.Name,
 			RiskLevel: spec.RiskLevel,
 			Args:      copyArgs(req.Args),
@@ -153,6 +154,9 @@ func (r *Runtime) audit(ctx context.Context, req CallRequest, inputJSON string, 
 	if err != nil {
 		return domain.ToolCall{}, err
 	}
+	if err := r.recordArtifact(ctx, created, result); err != nil {
+		return domain.ToolCall{}, err
+	}
 	r.log(ctx, "tool.call.response", map[string]any{
 		"id":           created.ID,
 		"attempt_id":   created.AttemptID,
@@ -163,6 +167,53 @@ func (r *Runtime) audit(ctx context.Context, req CallRequest, inputJSON string, 
 		"output":       result.Output,
 	})
 	return created, nil
+}
+
+type artifactStore interface {
+	CreateArtifact(ctx context.Context, artifact domain.Artifact) (domain.Artifact, error)
+	GetTaskAttempt(ctx context.Context, attemptID string) (domain.TaskAttempt, error)
+	GetTask(ctx context.Context, id string) (domain.Task, error)
+}
+
+func (r *Runtime) recordArtifact(ctx context.Context, call domain.ToolCall, result Result) error {
+	if !result.Success {
+		return nil
+	}
+	if call.Name != "artifact.write" && call.Name != "document.write" {
+		return nil
+	}
+	store, ok := r.store.(artifactStore)
+	if !ok {
+		return nil
+	}
+	path, _ := result.Output["artifact_ref"].(string)
+	if strings.TrimSpace(path) == "" {
+		path, _ = result.Output["path"].(string)
+	}
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	description, _ := result.Output["summary"].(string)
+	attempt, err := store.GetTaskAttempt(ctx, call.AttemptID)
+	if err != nil {
+		return err
+	}
+	task, err := store.GetTask(ctx, attempt.TaskID)
+	if err != nil {
+		return err
+	}
+	artifactType := "artifact"
+	if call.Name == "document.write" {
+		artifactType = "document"
+	}
+	_, err = store.CreateArtifact(ctx, domain.Artifact{
+		AttemptID:   call.AttemptID,
+		ProjectID:   task.ProjectID,
+		Type:        artifactType,
+		Path:        path,
+		Description: description,
+	})
+	return err
 }
 
 func (r *Runtime) log(ctx context.Context, stage string, payload any) {

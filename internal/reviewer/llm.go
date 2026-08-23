@@ -18,6 +18,7 @@ type LLMReviewStore interface {
 	CompleteTaskAttempt(ctx context.Context, attemptID string, status domain.AttemptStatus, message string) (domain.TaskAttempt, error)
 	ListObservationsByAttempt(ctx context.Context, attemptID string) ([]domain.Observation, error)
 	ListToolCallsByAttempt(ctx context.Context, attemptID string) ([]domain.ToolCall, error)
+	ListTestResultsByAttempt(ctx context.Context, attemptID string) ([]domain.TestResult, error)
 }
 
 type LLMReviewer struct {
@@ -45,10 +46,22 @@ func (r *LLMReviewer) Review(ctx context.Context, task domain.Task, attempt doma
 	if err != nil {
 		return Result{}, err
 	}
+	tests, err := r.store.ListTestResultsByAttempt(ctx, attempt.ID)
+	if err != nil {
+		return Result{}, err
+	}
+	evidenceRef := firstEvidenceRef(observations, toolCalls)
+	if !hasPassedTest(tests) {
+		return r.reject(ctx, task, attempt, "llm reviewer requires a passed test result before semantic review", evidenceRef)
+	}
+	if !hasFinishEvidence(observations) {
+		return r.reject(ctx, task, attempt, "llm reviewer requires agent.finish evidence before semantic review", evidenceRef)
+	}
 	payload := map[string]any{
 		"task":         task,
 		"observations": observations,
 		"tool_calls":   toolCalls,
+		"test_results": tests,
 		"instruction":  "Return JSON only: {\"approved\":true|false,\"summary\":\"...\"}. Approve when the task acceptance criteria are satisfied by observation summaries or payloads. Do not require a separate report/file/console output unless the task explicitly asks to create one.",
 	}
 	var decision llmReviewDecision
@@ -69,28 +82,13 @@ func (r *LLMReviewer) Review(ctx context.Context, task domain.Task, attempt doma
 		summary = "llm reviewer returned an empty summary"
 	}
 	if !decision.Approved {
-		result, createErr := r.store.CreateReviewResult(ctx, domain.ReviewResult{
-			AttemptID: attempt.ID,
-			Status:    domain.ReviewStatusRejected,
-			Summary:   summary,
-		})
-		if createErr != nil {
-			return Result{}, createErr
-		}
-		failedTask, transitionErr := r.store.TransitionTask(ctx, task.ID, domain.TaskStatusReviewFailed, summary)
-		if transitionErr != nil {
-			return Result{}, transitionErr
-		}
-		completedAttempt, completeErr := r.store.CompleteTaskAttempt(ctx, attempt.ID, domain.AttemptStatusFailed, summary)
-		if completeErr != nil {
-			return Result{}, completeErr
-		}
-		return Result{Task: failedTask, Attempt: completedAttempt, ReviewResult: result}, errors.New(summary)
+		return r.reject(ctx, task, attempt, summary, evidenceRef)
 	}
 	result, err := r.store.CreateReviewResult(ctx, domain.ReviewResult{
-		AttemptID: attempt.ID,
-		Status:    domain.ReviewStatusApproved,
-		Summary:   summary,
+		AttemptID:   attempt.ID,
+		Status:      domain.ReviewStatusApproved,
+		Summary:     summary,
+		EvidenceRef: evidenceRef,
 	})
 	if err != nil {
 		return Result{}, err
@@ -104,6 +102,41 @@ func (r *LLMReviewer) Review(ctx context.Context, task domain.Task, attempt doma
 		return Result{}, err
 	}
 	return Result{Task: doneTask, Attempt: completedAttempt, ReviewResult: result}, nil
+}
+
+func (r *LLMReviewer) reject(ctx context.Context, task domain.Task, attempt domain.TaskAttempt, summary string, evidenceRef string) (Result, error) {
+	result, createErr := r.store.CreateReviewResult(ctx, domain.ReviewResult{
+		AttemptID:   attempt.ID,
+		Status:      domain.ReviewStatusRejected,
+		Summary:     summary,
+		EvidenceRef: evidenceRef,
+	})
+	if createErr != nil {
+		return Result{}, createErr
+	}
+	failedTask, transitionErr := r.store.TransitionTask(ctx, task.ID, domain.TaskStatusReviewFailed, summary)
+	if transitionErr != nil {
+		return Result{}, transitionErr
+	}
+	completedAttempt, completeErr := r.store.CompleteTaskAttempt(ctx, attempt.ID, domain.AttemptStatusFailed, summary)
+	if completeErr != nil {
+		return Result{}, completeErr
+	}
+	return Result{Task: failedTask, Attempt: completedAttempt, ReviewResult: result}, errors.New(summary)
+}
+
+func firstEvidenceRef(observations []domain.Observation, toolCalls []domain.ToolCall) string {
+	for _, observation := range observations {
+		if strings.TrimSpace(observation.EvidenceRef) != "" {
+			return strings.TrimSpace(observation.EvidenceRef)
+		}
+	}
+	for _, call := range toolCalls {
+		if strings.TrimSpace(call.EvidenceRef) != "" {
+			return strings.TrimSpace(call.EvidenceRef)
+		}
+	}
+	return ""
 }
 
 type llmReviewDecision struct {
