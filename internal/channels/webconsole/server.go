@@ -20,6 +20,8 @@ type Store interface {
 	ListTaskEvents(ctx context.Context, taskID string) ([]domain.TaskEvent, error)
 	ListObservationsByAttempt(ctx context.Context, attemptID string) ([]domain.Observation, error)
 	ListToolCallsByAttempt(ctx context.Context, attemptID string) ([]domain.ToolCall, error)
+	ListTestResultsByAttempt(ctx context.Context, attemptID string) ([]domain.TestResult, error)
+	ListReviewResultsByAttempt(ctx context.Context, attemptID string) ([]domain.ReviewResult, error)
 	ListArtifactsByProject(ctx context.Context, projectID string) ([]domain.Artifact, error)
 }
 
@@ -40,6 +42,10 @@ type ConfigView struct {
 	LLMTimeoutSeconds      int      `json:"llm_timeout_seconds"`
 	BrowserHeadless        bool     `json:"browser_headless"`
 	BrowserTimeoutSeconds  int      `json:"browser_timeout_seconds"`
+	LLMProvider            string   `json:"llm_provider"`
+	LLMModel               string   `json:"llm_model"`
+	LLMBaseURL             string   `json:"llm_base_url"`
+	LLMAPIKey              string   `json:"llm_api_key"`
 }
 
 type Server struct {

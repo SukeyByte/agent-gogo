@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/SukeyByte/agent-gogo/internal/channels/webconsole"
 	"github.com/SukeyByte/agent-gogo/internal/communication"
@@ -34,6 +36,7 @@ import (
 	"github.com/SukeyByte/agent-gogo/internal/tester"
 	"github.com/SukeyByte/agent-gogo/internal/tools"
 	"github.com/SukeyByte/agent-gogo/internal/validator"
+	"github.com/google/uuid"
 )
 
 func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Writer) error {
@@ -70,14 +73,19 @@ func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Wri
 	var sender webconsole.ChannelEventSender
 	var bridge *runtimeServiceBridge
 	llm, llmErr := newLLMProvider(cfg)
+	var swappable *provider.SwappableLLMProvider
 	if llmErr == nil {
-		bridge, err = initWebRuntime(ctx, cfg, sqlite, llm, hub, channelID, sessionID, assets)
+		swappable = provider.NewSwappableLLMProvider(llm)
+		swappable.SetModel(cfg.LLM.Model)
+		bridge, err = initWebRuntime(ctx, cfg, sqlite, swappable, hub, channelID, sessionID, assets)
 		if err != nil {
 			_, _ = fmt.Fprintf(writer, "Warning: runtime init failed (%v), running in read-only mode\n", err)
 			sender = nil
 			bridge = nil
 		} else {
 			sender = bridge
+			bridge.swappable = swappable
+			bridge.cfgPath = opts.ConfigPath
 			defer bridge.Close()
 		}
 	} else {
@@ -102,9 +110,14 @@ func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Wri
 		LLMTimeoutSeconds:      int(cfg.LLM.Timeout.Seconds()),
 		BrowserHeadless:        cfg.Browser.Headless,
 		BrowserTimeoutSeconds:  int(cfg.Browser.Timeout.Seconds()),
+		LLMProvider:            cfg.LLM.Provider,
+		LLMModel:               cfg.LLM.Model,
+		LLMBaseURL:             cfg.LLM.BaseURL,
+		LLMAPIKey:              cfg.LLM.APIKey,
 	}, channelID, sessionID, distDir)
 	apiServer.UseSessionStore(sqlite)
 	apiServer.UseAssets(assets.skills, assets.personas, assets.memories)
+	apiServer.UseConfigPath(opts.ConfigPath)
 
 	mode := "read-only"
 	if sender != nil {
@@ -156,6 +169,7 @@ func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQL
 
 	commRuntime := communication.NewRuntime(communication.NewMemoryOutbox(), communication.NewRenderer())
 	commRuntime.RegisterChannel(channelID, webconsole.NewWebConsoleAdapter(channelID, hub))
+	confirmationGate := newWebToolConfirmationGate(commRuntime, sqlite, channelID)
 
 	toolRuntime := tools.NewBuiltinRuntime(sqlite, cfg.Storage.WorkspacePath)
 	toolRuntime.UseLogger(logger)
@@ -164,7 +178,7 @@ func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQL
 		ShellAllowlist:            cfg.Security.ShellAllowlist,
 		RequireConfirmationAtRisk: confirmationRisk(cfg),
 	}
-	toolRuntime.UseSecurityPolicy(policy, tools.AutoConfirmationGate{})
+	toolRuntime.UseSecurityPolicy(policy, confirmationGate)
 	browserEngine := newLazyBrowserEngine(cfg)
 	toolRuntime.RegisterBrowserTools(browserEngine)
 
@@ -207,6 +221,7 @@ func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQL
 		sessions:      sessionSvc,
 		toolRuntime:   toolRuntime,
 		policy:        policy,
+		confirmations: confirmationGate,
 		browserCloser: browserEngine.Close,
 	}, nil
 }
@@ -216,7 +231,112 @@ type runtimeServiceBridge struct {
 	sessions      *session.Service
 	toolRuntime   *tools.Runtime
 	policy        tools.SecurityPolicy
+	confirmations *webToolConfirmationGate
 	browserCloser func() error
+	swappable     *provider.SwappableLLMProvider
+	cfgPath       string
+}
+
+type webToolConfirmationGate struct {
+	dispatcher *communication.Runtime
+	store      *store.SQLiteStore
+	channelID  string
+
+	mu      sync.Mutex
+	pending map[string]chan bool
+}
+
+func newWebToolConfirmationGate(dispatcher *communication.Runtime, store *store.SQLiteStore, channelID string) *webToolConfirmationGate {
+	return &webToolConfirmationGate{
+		dispatcher: dispatcher,
+		store:      store,
+		channelID:  channelID,
+		pending:    map[string]chan bool{},
+	}
+}
+
+func (g *webToolConfirmationGate) Confirm(ctx context.Context, req tools.ConfirmationRequest) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if g == nil || g.dispatcher == nil {
+		return false, tools.ErrConfirmationRequired
+	}
+	confirmationID := uuid.NewString()
+	reply := make(chan bool, 1)
+
+	g.mu.Lock()
+	g.pending[confirmationID] = reply
+	g.mu.Unlock()
+	defer g.forget(confirmationID)
+
+	projectID, taskID := g.confirmationScope(ctx, req.AttemptID)
+	body := fmt.Sprintf("Tool `%s` wants to run with %s risk.", req.ToolName, firstNonEmpty(req.RiskLevel, "unknown"))
+	intent := communication.NewConfirmationIntent(g.channelID, "Approve tool action", body, communication.RiskLevel(req.RiskLevel))
+	intent.ProjectID = projectID
+	intent.Payload["confirmation_id"] = confirmationID
+	intent.Payload["action_id"] = confirmationID
+	intent.Payload["attempt_id"] = req.AttemptID
+	intent.Payload["project_id"] = projectID
+	intent.Payload["task_id"] = taskID
+	intent.Payload["tool_name"] = req.ToolName
+	intent.Payload["risk_level"] = req.RiskLevel
+	intent.Payload["args"] = req.Args
+	if _, err := g.dispatcher.Dispatch(ctx, intent); err != nil {
+		return false, err
+	}
+
+	select {
+	case approved := <-reply:
+		return approved, nil
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+}
+
+func (g *webToolConfirmationGate) Resolve(confirmation webconsole.InboundConfirmation) bool {
+	if g == nil {
+		return false
+	}
+	id := strings.TrimSpace(confirmation.ConfirmationID)
+	if id == "" {
+		id = strings.TrimSpace(confirmation.ActionID)
+	}
+	if id == "" {
+		return false
+	}
+	g.mu.Lock()
+	ch, ok := g.pending[id]
+	if ok {
+		delete(g.pending, id)
+	}
+	g.mu.Unlock()
+	if !ok {
+		return false
+	}
+	ch <- confirmation.Approved
+	return true
+}
+
+func (g *webToolConfirmationGate) forget(id string) {
+	g.mu.Lock()
+	delete(g.pending, id)
+	g.mu.Unlock()
+}
+
+func (g *webToolConfirmationGate) confirmationScope(ctx context.Context, attemptID string) (string, string) {
+	if g == nil || g.store == nil || strings.TrimSpace(attemptID) == "" {
+		return "", ""
+	}
+	attempt, err := g.store.GetTaskAttempt(ctx, attemptID)
+	if err != nil {
+		return "", ""
+	}
+	task, err := g.store.GetTask(ctx, attempt.TaskID)
+	if err != nil {
+		return "", attempt.TaskID
+	}
+	return task.ProjectID, task.ID
 }
 
 func (b *runtimeServiceBridge) Close() error {
@@ -232,20 +352,41 @@ func (b *runtimeServiceBridge) HandleChannelEvent(ctx context.Context, event web
 		return b.updateRuntimeConfig(ctx, event.Payload)
 	case "session.resume":
 		return b.resumeSession(ctx, event.SessionID, event.ProjectID)
+	case "goal.submitted":
+		runtimeEvent := toRuntimeChannelEvent(event)
+		go func() {
+			if err := b.service.HandleChannelEvent(context.Background(), runtimeEvent); err != nil {
+				_ = b.service.HandleChannelEvent(context.Background(), appruntime.ChannelEvent{
+					Type:      "runtime.error",
+					ChannelID: runtimeEvent.ChannelID,
+					SessionID: runtimeEvent.SessionID,
+					ProjectID: runtimeEvent.ProjectID,
+					Text:      err.Error(),
+				})
+			}
+		}()
+		return nil
 	default:
-		return b.service.HandleChannelEvent(ctx, appruntime.ChannelEvent{
-			Type:      event.Type,
-			ChannelID: event.ChannelID,
-			SessionID: event.SessionID,
-			ProjectID: event.ProjectID,
-			TaskID:    event.TaskID,
-			Text:      event.Text,
-			Payload:   event.Payload,
-		})
+		return b.service.HandleChannelEvent(ctx, toRuntimeChannelEvent(event))
+	}
+}
+
+func toRuntimeChannelEvent(event webconsole.InboundEvent) appruntime.ChannelEvent {
+	return appruntime.ChannelEvent{
+		Type:      event.Type,
+		ChannelID: event.ChannelID,
+		SessionID: event.SessionID,
+		ProjectID: event.ProjectID,
+		TaskID:    event.TaskID,
+		Text:      event.Text,
+		Payload:   event.Payload,
 	}
 }
 
 func (b *runtimeServiceBridge) HandleUserConfirmation(ctx context.Context, confirmation webconsole.InboundConfirmation) error {
+	if b.confirmations != nil && b.confirmations.Resolve(confirmation) {
+		return nil
+	}
 	return b.service.HandleUserConfirmation(ctx, appruntime.UserConfirmation{
 		ConfirmationID: confirmation.ConfirmationID,
 		ProjectID:      confirmation.ProjectID,
@@ -290,7 +431,32 @@ func (b *runtimeServiceBridge) updateRuntimeConfig(ctx context.Context, payload 
 		b.policy.ShellAllowlist = splitConfigList(raw)
 	}
 	if b.toolRuntime != nil {
-		b.toolRuntime.UseSecurityPolicy(b.policy, tools.AutoConfirmationGate{})
+		b.toolRuntime.UseSecurityPolicy(b.policy, b.confirmations)
+	}
+	// LLM hot-swap: if any LLM identity field changed, create new provider and swap
+	llmProvider := strings.TrimSpace(payload["llm_provider"])
+	llmModel := strings.TrimSpace(payload["llm_model"])
+	llmBaseURL := strings.TrimSpace(payload["llm_base_url"])
+	llmAPIKey := strings.TrimSpace(payload["llm_api_key"])
+	if llmProvider != "" || llmModel != "" || llmBaseURL != "" || llmAPIKey != "" {
+		if b.swappable != nil {
+			llmCfg := appconfig.LLMConfig{
+				Provider: llmProvider,
+				Model:    llmModel,
+				BaseURL:  llmBaseURL,
+				APIKey:   llmAPIKey,
+				Timeout:  120 * time.Second,
+			}
+			newLLM, err := newLLMFromConfig(llmCfg)
+			if err != nil {
+				return fmt.Errorf("failed to create new LLM provider: %w", err)
+			}
+			b.swappable.Swap(newLLM)
+			if llmModel != "" {
+				b.swappable.SetModel(llmModel)
+				b.service.UseLLM(b.swappable, llmModel)
+			}
+		}
 	}
 	return b.service.HandleChannelEvent(ctx, appruntime.ChannelEvent{
 		Type:    "config.update",

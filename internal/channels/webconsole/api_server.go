@@ -23,17 +23,18 @@ type SessionStore interface {
 }
 
 type APIServer struct {
-	store     Store
-	sessions  SessionStore
-	sender    ChannelEventSender
-	hub       *SSEHub
-	config    ConfigView
-	channelID string
-	sessionID string
-	distDir   string
-	skills    *skill.Registry
-	personas  *persona.Registry
-	memories  *memory.Index
+	store      Store
+	sessions   SessionStore
+	sender     ChannelEventSender
+	hub        *SSEHub
+	config     ConfigView
+	channelID  string
+	sessionID  string
+	distDir    string
+	skills     *skill.Registry
+	personas   *persona.Registry
+	memories   *memory.Index
+	configPath string
 }
 
 func NewAPIServer(store Store, sender ChannelEventSender, hub *SSEHub, config ConfigView, channelID, sessionID, distDir string) *APIServer {
@@ -51,6 +52,10 @@ func NewAPIServer(store Store, sender ChannelEventSender, hub *SSEHub, config Co
 
 func (s *APIServer) UseSessionStore(sessions SessionStore) {
 	s.sessions = sessions
+}
+
+func (s *APIServer) UseConfigPath(path string) {
+	s.configPath = path
 }
 
 func (s *APIServer) UseAssets(skills *skill.Registry, personas *persona.Registry, memories *memory.Index) {
@@ -73,11 +78,19 @@ func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux.HandleFunc("/api/message", s.handlePostMessage)
 	mux.HandleFunc("/api/confirmation", s.handlePostConfirmation)
 	mux.HandleFunc("/api/config", s.handleConfig)
-	mux.HandleFunc("/api/skills/", s.handleGetSkill)
+	mux.HandleFunc("/api/channels", s.handleListChannels)
+	mux.HandleFunc("/api/files/content", s.handleReadFile)
+	mux.HandleFunc("/api/files", s.handleListFiles)
+	mux.HandleFunc("/api/skills/search-github", s.handleSearchGithubSkills)
+	mux.HandleFunc("/api/skills/github-files", s.handleListGithubSkillFiles)
+	mux.HandleFunc("/api/skills/install", s.handleInstallSkill)
+	mux.HandleFunc("/api/skills/", s.apiSkillRoutes)
 	mux.HandleFunc("/api/skills", s.handleListSkills)
-	mux.HandleFunc("/api/personas/", s.handleGetPersona)
+	mux.HandleFunc("/api/personas/create", s.handleCreatePersona)
+	mux.HandleFunc("/api/personas/", s.apiPersonaRoutes)
 	mux.HandleFunc("/api/personas", s.handleListPersonas)
-	mux.HandleFunc("/api/memory/", s.handleGetMemory)
+	mux.HandleFunc("/api/memory/create", s.handleCreateMemory)
+	mux.HandleFunc("/api/memory/", s.apiMemoryRoutes)
 	mux.HandleFunc("/api/memory", s.handleListMemory)
 	mux.HandleFunc("/api/events", s.handleSSE)
 
@@ -125,6 +138,10 @@ func (s *APIServer) apiAttemptRoutes(w http.ResponseWriter, r *http.Request) {
 		s.handleListToolCalls(w, r)
 	} else if strings.HasSuffix(path, "/observations") {
 		s.handleListObservations(w, r)
+	} else if strings.HasSuffix(path, "/test-results") {
+		s.handleListTestResults(w, r)
+	} else if strings.HasSuffix(path, "/review-results") {
+		s.handleListReviewResults(w, r)
 	} else {
 		http.NotFound(w, r)
 	}
@@ -139,6 +156,36 @@ func (s *APIServer) apiSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionAction(w, r)
 	default:
 		s.handleGetSession(w, r)
+	}
+}
+
+func (s *APIServer) apiSkillRoutes(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	if strings.HasSuffix(path, "/delete") {
+		s.handleDeleteSkill(w, r)
+	} else {
+		s.handleGetSkill(w, r)
+	}
+}
+
+func (s *APIServer) apiPersonaRoutes(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	switch {
+	case strings.HasSuffix(path, "/update"):
+		s.handleUpdatePersona(w, r)
+	case strings.HasSuffix(path, "/delete"):
+		s.handleDeletePersona(w, r)
+	default:
+		s.handleGetPersona(w, r)
+	}
+}
+
+func (s *APIServer) apiMemoryRoutes(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	if strings.HasSuffix(path, "/delete") {
+		s.handleDeleteMemory(w, r)
+	} else {
+		s.handleGetMemory(w, r)
 	}
 }
 

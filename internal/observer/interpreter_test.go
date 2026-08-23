@@ -24,6 +24,22 @@ func TestInterpretToolCallClassifiesFileWrite(t *testing.T) {
 	}
 }
 
+func TestInterpretToolCallClassifiesFileAppend(t *testing.T) {
+	state := InterpretToolCall(domain.ToolCall{Name: "file.write", Status: domain.ToolCallStatusSucceeded}, tools.Result{
+		Success: true,
+		Output:  map[string]any{"path": "story.md", "operation": "append", "appended": true},
+	})
+	if state.Status != StateChanged {
+		t.Fatalf("expected changed state, got %s", state.Status)
+	}
+	if state.Summary != "appended story.md" {
+		t.Fatalf("expected append summary, got %q", state.Summary)
+	}
+	if state.Signals["operation"] != "append" {
+		t.Fatalf("expected append operation signal, got %#v", state.Signals)
+	}
+}
+
 func TestInterpretToolCallClassifiesBrowserActions(t *testing.T) {
 	for _, toolName := range []string{"browser.open", "browser.type", "browser.input", "browser.wait", "browser.extract", "browser.dom_summary", "browser.screenshot"} {
 		t.Run(toolName, func(t *testing.T) {

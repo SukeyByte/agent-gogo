@@ -197,3 +197,87 @@ func tokenMatch(haystack string, query string) bool {
 	}
 	return false
 }
+
+// --- Mutation methods ---
+
+func sanitizeFileName(name string) string {
+	var out strings.Builder
+	for _, ch := range name {
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' {
+			out.WriteRune(ch)
+		}
+	}
+	result := out.String()
+	if result == "" || result == ".md" {
+		result = "persona.md"
+	}
+	return result
+}
+
+// WritePersonaFile writes a persona .md file with YAML frontmatter + instructions.
+func WritePersonaFile(path string, name string, personaType string, description string, instructions string) (Card, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return Card{}, err
+	}
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	sb.WriteString("name: " + name + "\n")
+	sb.WriteString("type: " + personaType + "\n")
+	sb.WriteString("description: " + description + "\n")
+	sb.WriteString("---\n")
+	if instructions != "" {
+		sb.WriteString(instructions)
+	}
+	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
+		return Card{}, err
+	}
+	return parseCard(path)
+}
+
+func (r *Registry) Create(ctx context.Context, root string, name string, personaType string, description string, instructions string) (Card, error) {
+	if err := ctx.Err(); err != nil {
+		return Card{}, err
+	}
+	fileName := sanitizeFileName(strings.ToLower(strings.ReplaceAll(name, " ", "-")) + ".md")
+	path := filepath.Join(root, fileName)
+	if _, err := os.Stat(path); err == nil {
+		return Card{}, errors.New("persona already exists: " + fileName)
+	}
+	card, err := WritePersonaFile(path, name, personaType, description, instructions)
+	if err != nil {
+		return Card{}, err
+	}
+	r.cards[card.ID] = card
+	return card, nil
+}
+
+func (r *Registry) Update(ctx context.Context, id string, name string, personaType string, description string, instructions string) (Card, error) {
+	if err := ctx.Err(); err != nil {
+		return Card{}, err
+	}
+	existing, ok := r.cards[id]
+	if !ok {
+		return Card{}, ErrPersonaNotFound
+	}
+	card, err := WritePersonaFile(existing.Path, name, personaType, description, instructions)
+	if err != nil {
+		return Card{}, err
+	}
+	r.cards[id] = card
+	return card, nil
+}
+
+func (r *Registry) Delete(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	card, ok := r.cards[id]
+	if !ok {
+		return ErrPersonaNotFound
+	}
+	if err := os.Remove(card.Path); err != nil {
+		return err
+	}
+	delete(r.cards, id)
+	return nil
+}

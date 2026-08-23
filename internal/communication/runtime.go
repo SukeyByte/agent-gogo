@@ -34,6 +34,17 @@ func (r *Runtime) RegisterChannel(channelID string, adapter Adapter) {
 	r.adapters[channelID] = adapter
 }
 
+func (r *Runtime) ChannelCapability(ctx context.Context, channelID string) (ChannelCapability, error) {
+	if err := ctx.Err(); err != nil {
+		return ChannelCapability{}, err
+	}
+	adapter, ok := r.adapters[channelID]
+	if !ok {
+		return ChannelCapability{}, ErrChannelNotFound
+	}
+	return adapter.Capability(ctx)
+}
+
 func (r *Runtime) Dispatch(ctx context.Context, intent CommunicationIntent) (DeliveryReceipt, error) {
 	if err := ctx.Err(); err != nil {
 		return DeliveryReceipt{}, err

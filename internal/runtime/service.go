@@ -32,6 +32,7 @@ import (
 type Store interface {
 	CreateProject(ctx context.Context, project domain.Project) (domain.Project, error)
 	GetProject(ctx context.Context, id string) (domain.Project, error)
+	UpdateProjectStatus(ctx context.Context, projectID string, status domain.ProjectStatus) (domain.Project, error)
 	CreateTask(ctx context.Context, task domain.Task) (domain.Task, error)
 	GetTask(ctx context.Context, id string) (domain.Task, error)
 	CreateTaskDependency(ctx context.Context, dependency domain.TaskDependency) (domain.TaskDependency, error)
@@ -280,6 +281,7 @@ func (s *Service) PlanProject(ctx context.Context, projectID string) ([]domain.T
 	if err != nil {
 		return nil, err
 	}
+	drafts = normalizeTaskDependencies(drafts)
 	if err := s.log(ctx, "planner.tasks", drafts); err != nil {
 		return nil, err
 	}
@@ -353,6 +355,148 @@ func (s *Service) PlanProject(ctx context.Context, projectID string) ([]domain.T
 	}
 	s.saveSessionContext(ctx, project.ID)
 	return readyTasks, nil
+}
+
+func normalizeTaskDependencies(tasks []domain.Task) []domain.Task {
+	if len(tasks) == 0 {
+		return tasks
+	}
+	out := append([]domain.Task(nil), tasks...)
+	titleSet := map[string]struct{}{}
+	for _, task := range out {
+		if title := strings.TrimSpace(task.Title); title != "" {
+			titleSet[title] = struct{}{}
+		}
+	}
+	researchTitle := firstDomainTaskTitleMatching(out, []string{"研究", "調研", "调研", "research", "context", "gather", "收集", "获取", "取得", "读取", "搜索"})
+	reflectionTitle := firstDomainTaskTitleMatching(out, []string{"反思", "reflection", "review plan", "验收口径", "驗收口徑", "decomposition", "acceptance criteria"})
+	finalMarkers := []string{"最终", "最終", "验收", "驗收", "验证", "驗證", "检查", "檢查", "自检", "自檢", "自查", "复核", "覆核", "完整性", "汇报", "匯報", "总结", "總結", "汇总", "彙總", "final", "verify", "validate", "validation", "self-check", "self check", "selfcheck", "correctness", "completeness", "report", "summary"}
+	taskByTitle := map[string]domain.Task{}
+	finalByTitle := map[string]bool{}
+	for _, task := range out {
+		title := strings.TrimSpace(task.Title)
+		if title == "" {
+			continue
+		}
+		taskByTitle[title] = task
+		finalByTitle[title] = title != researchTitle && title != reflectionTitle && domainTaskMatches(task, finalMarkers)
+	}
+	for i := range out {
+		title := strings.TrimSpace(out[i].Title)
+		isFinalTask := finalByTitle[title]
+		deps := make([]string, 0, len(out[i].DependsOn)+1)
+		seen := map[string]struct{}{}
+		addDep := func(dep string) {
+			dep = strings.TrimSpace(dep)
+			if dep == "" || dep == title {
+				return
+			}
+			if _, ok := titleSet[dep]; !ok {
+				return
+			}
+			if !isFinalTask {
+				if _, ok := taskByTitle[dep]; ok && finalByTitle[dep] {
+					return
+				}
+			}
+			if _, ok := seen[dep]; ok {
+				return
+			}
+			seen[dep] = struct{}{}
+			deps = append(deps, dep)
+		}
+		switch title {
+		case researchTitle:
+		case reflectionTitle:
+			if researchTitle != "" && researchTitle != reflectionTitle {
+				addDep(researchTitle)
+			}
+		default:
+			for _, dep := range out[i].DependsOn {
+				addDep(dep)
+			}
+			if reflectionTitle != "" {
+				addDep(reflectionTitle)
+			} else if researchTitle != "" {
+				addDep(researchTitle)
+			}
+			if isFinalTask {
+				for _, candidate := range out {
+					if strings.TrimSpace(candidate.Title) == title || strings.TrimSpace(candidate.Title) == "" {
+						continue
+					}
+					if domainTaskMatches(candidate, finalMarkers) {
+						continue
+					}
+					addDep(candidate.Title)
+				}
+			}
+		}
+		out[i].DependsOn = deps
+	}
+	return pruneDomainDependencyCycles(out)
+}
+
+func firstDomainTaskTitleMatching(tasks []domain.Task, markers []string) string {
+	for _, task := range tasks {
+		if domainTaskMatches(task, markers) && strings.TrimSpace(task.Title) != "" {
+			return task.Title
+		}
+	}
+	return ""
+}
+
+func domainTaskMatches(task domain.Task, markers []string) bool {
+	text := strings.ToLower(task.Title + " " + task.Description + " " + strings.Join(task.AcceptanceCriteria, " "))
+	for _, marker := range markers {
+		if strings.Contains(text, strings.ToLower(marker)) {
+			return true
+		}
+	}
+	return false
+}
+
+func pruneDomainDependencyCycles(tasks []domain.Task) []domain.Task {
+	out := append([]domain.Task(nil), tasks...)
+	depsByTitle := map[string][]string{}
+	for _, task := range out {
+		depsByTitle[task.Title] = append([]string(nil), task.DependsOn...)
+	}
+	for i := range out {
+		title := strings.TrimSpace(out[i].Title)
+		kept := out[i].DependsOn[:0]
+		for _, dep := range out[i].DependsOn {
+			depsByTitle[title] = kept
+			if domainDependencyReaches(depsByTitle, dep, title, map[string]bool{}) {
+				continue
+			}
+			kept = append(kept, dep)
+		}
+		out[i].DependsOn = kept
+		depsByTitle[title] = append([]string(nil), kept...)
+	}
+	return out
+}
+
+func domainDependencyReaches(depsByTitle map[string][]string, from string, target string, seen map[string]bool) bool {
+	from = strings.TrimSpace(from)
+	target = strings.TrimSpace(target)
+	if from == "" || target == "" {
+		return false
+	}
+	if from == target {
+		return true
+	}
+	if seen[from] {
+		return false
+	}
+	seen[from] = true
+	for _, next := range depsByTitle[from] {
+		if domainDependencyReaches(depsByTitle, next, target, seen) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) runDiscovery(ctx context.Context, project domain.Project, decision chain.Decision, profile intentpkg.Profile) (discovery.Result, error) {
@@ -440,7 +584,9 @@ func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunRes
 	if err != nil {
 		var executionErr *executor.ExecutionError
 		if errors.As(err, &executionErr) && executionErr.Attempt.ID != "" {
-			_ = s.createRepairTask(ctx, projectID, executionErr.Task, executionErr.Attempt, "executor.failed", err)
+			if _, repairErr := s.createRepairTask(ctx, projectID, executionErr.Task, executionErr.Attempt, "executor.failed", err); repairErr != nil {
+				err = errors.Join(err, repairErr)
+			}
 		}
 		s.emitTaskBlocked(ctx, projectID, task, "Task failed during execution: "+err.Error())
 		return TaskRunResult{}, err
@@ -456,7 +602,9 @@ func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunRes
 	}
 	tested, err := s.tester.Test(ctx, executed.Task, executed.Attempt)
 	if err != nil {
-		_ = s.createRepairTask(ctx, projectID, executed.Task, executed.Attempt, "tester.failed", err)
+		if _, repairErr := s.createRepairTask(ctx, projectID, executed.Task, executed.Attempt, "tester.failed", err); repairErr != nil {
+			err = errors.Join(err, repairErr)
+		}
 		s.emitTaskBlocked(ctx, projectID, executed.Task, "Task failed during testing: "+err.Error())
 		return TaskRunResult{}, err
 	}
@@ -468,7 +616,9 @@ func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunRes
 	}
 	reviewed, err := s.reviewer.Review(ctx, tested.Task, executed.Attempt)
 	if err != nil {
-		_ = s.createRepairTask(ctx, projectID, tested.Task, executed.Attempt, "reviewer.rejected", err)
+		if _, repairErr := s.createRepairTask(ctx, projectID, tested.Task, executed.Attempt, "reviewer.rejected", err); repairErr != nil {
+			err = errors.Join(err, repairErr)
+		}
 		s.emitTaskBlocked(ctx, projectID, tested.Task, "Task failed during review: "+err.Error())
 		return TaskRunResult{}, err
 	}
@@ -476,6 +626,9 @@ func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunRes
 		return TaskRunResult{}, err
 	}
 	if err := s.extractTaskMemories(ctx, projectID, reviewed.Task, reviewed.Attempt, reviewed.ReviewResult); err != nil {
+		return TaskRunResult{}, err
+	}
+	if err := s.completeRepairedTask(ctx, projectID, reviewed.Task); err != nil {
 		return TaskRunResult{}, err
 	}
 	events, err := s.store.ListTaskEvents(ctx, reviewed.Task.ID)
@@ -511,7 +664,9 @@ func (s *Service) RunProjectTasks(ctx context.Context, projectID string, maxTask
 		return 0, err
 	}
 	ranTasks := 0
-	for ranTasks < maxTasks {
+	iterations := 0
+	for iterations < maxTasks {
+		iterations++
 		result, err := s.RunNextTask(ctx, projectID)
 		if errors.Is(err, sql.ErrNoRows) {
 			if blocked, blockErr := s.blockTasksWaitingOnBlockedDependencies(ctx, projectID); blockErr != nil {
@@ -525,12 +680,25 @@ func (s *Service) RunProjectTasks(ctx context.Context, projectID string, maxTask
 				s.emitProjectBlocked(ctx, projectID, fmt.Sprintf("Project run paused after %d task(s): %s", ranTasks, summary))
 				return ranTasks, nil
 			}
+			if _, err := s.store.UpdateProjectStatus(ctx, projectID, domain.ProjectStatusCompleted); err != nil {
+				return ranTasks, err
+			}
 			if err := s.emit(ctx, comm.NewDoneIntent(s.communicationChannel, fmt.Sprintf("Project run finished: %d task(s) completed", ranTasks)), projectID); err != nil {
 				return ranTasks, err
 			}
 			return ranTasks, nil
 		}
 		if err != nil {
+			if hasReady, readyErr := s.hasReadyTask(ctx, projectID); readyErr != nil {
+				return ranTasks, readyErr
+			} else if hasReady {
+				_ = s.emit(ctx, comm.NewProgressIntent(s.communicationChannel, "Project run continuing with recovery task after failure", map[string]any{
+					"project_id": projectID,
+					"status":     "RECOVERING",
+					"error":      err.Error(),
+				}), projectID)
+				continue
+			}
 			s.emitProjectBlocked(ctx, projectID, fmt.Sprintf("Project run stopped after %d task(s): %s", ranTasks, err.Error()))
 			return ranTasks, err
 		}
@@ -542,6 +710,17 @@ func (s *Service) RunProjectTasks(ctx context.Context, projectID string, maxTask
 	err := fmt.Errorf("max task limit reached: %d", maxTasks)
 	s.emitProjectBlocked(ctx, projectID, err.Error())
 	return ranTasks, err
+}
+
+func (s *Service) hasReadyTask(ctx context.Context, projectID string) (bool, error) {
+	_, err := s.scheduler.NextReadyTask(ctx, projectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Service) blockTasksWaitingOnBlockedDependencies(ctx context.Context, projectID string) (int, error) {
@@ -764,7 +943,9 @@ type runtimeContextConsumer interface {
 	UseRuntimeContext(projectID string, contextText string)
 }
 
-func (s *Service) createRepairTask(ctx context.Context, projectID string, failedTask domain.Task, attempt domain.TaskAttempt, eventType string, cause error) error {
+const maxRepairDepth = 3
+
+func (s *Service) createRepairTask(ctx context.Context, projectID string, failedTask domain.Task, attempt domain.TaskAttempt, eventType string, cause error) (domain.Task, error) {
 	message := strings.TrimSpace(cause.Error())
 	if message == "" {
 		message = "runtime verification failed"
@@ -772,11 +953,17 @@ func (s *Service) createRepairTask(ctx context.Context, projectID string, failed
 	if latest, err := s.store.GetTask(ctx, failedTask.ID); err == nil {
 		failedTask = latest
 	}
+	repairTargetID := failedTask.ID
+	if rootID, err := s.rootRepairTargetID(ctx, failedTask.ID); err != nil {
+		return domain.Task{}, err
+	} else if rootID != "" {
+		repairTargetID = rootID
+	}
 	if failedTask.Status != domain.TaskStatusFailed && failedTask.Status != domain.TaskStatusDone && failedTask.Status != domain.TaskStatusCancelled {
 		if domain.CanTransitionTask(failedTask.Status, domain.TaskStatusFailed) {
 			transitioned, err := s.store.TransitionTask(ctx, failedTask.ID, domain.TaskStatusFailed, message)
 			if err != nil {
-				return err
+				return domain.Task{}, err
 			}
 			failedTask = transitioned
 		}
@@ -786,15 +973,15 @@ func (s *Service) createRepairTask(ctx context.Context, projectID string, failed
 		AttemptID: attempt.ID,
 		Type:      eventType,
 		Message:   message,
-		Payload:   fmt.Sprintf(`{"failed_task_id":%q}`, failedTask.ID),
+		Payload:   fmt.Sprintf(`{"failed_task_id":%q}`, repairTargetID),
 	}); err != nil {
-		return err
+		return domain.Task{}, err
 	}
 	if s.memories != nil {
 		item := taskaware.FailureMemory(projectID, failedTask, attempt, eventType, message)
 		s.memories.Add(item)
 		if err := s.persistMemories(ctx); err != nil {
-			return err
+			return domain.Task{}, err
 		}
 		_ = s.log(ctx, "memory.extract", map[string]any{
 			"project_id": projectID,
@@ -803,18 +990,164 @@ func (s *Service) createRepairTask(ctx context.Context, projectID string, failed
 			"type":       item.Type,
 		})
 	}
+	if depth := repairDepth(failedTask.Title); depth >= maxRepairDepth {
+		limitErr := fmt.Errorf("repair limit reached for task %q after %d nested repair attempt(s)", failedTask.Title, depth)
+		if _, err := s.store.AddTaskEvent(ctx, domain.TaskEvent{
+			TaskID:    failedTask.ID,
+			AttemptID: attempt.ID,
+			Type:      "repair.limit_reached",
+			Message:   limitErr.Error(),
+			Payload:   fmt.Sprintf(`{"failed_task_id":%q,"max_depth":%d}`, repairTargetID, maxRepairDepth),
+		}); err != nil {
+			return domain.Task{}, err
+		}
+		return domain.Task{}, limitErr
+	}
 	repair, err := s.store.CreateTask(ctx, domain.Task{
-		ProjectID:          projectID,
-		Title:              "Fix: " + failedTask.Title,
-		Description:        "Repair failed task after " + eventType + ": " + message,
-		Status:             domain.TaskStatusDraft,
-		AcceptanceCriteria: []string{"Failure evidence is understood", "A targeted fix is applied", "Tests pass after repair"},
+		ProjectID:   projectID,
+		Title:       "Fix: " + failedTask.Title,
+		Description: "Repair failed task after " + eventType + ": " + message + "\nOriginal task acceptance criteria: " + strings.Join(failedTask.AcceptanceCriteria, "; "),
+		Status:      domain.TaskStatusDraft,
+		AcceptanceCriteria: []string{
+			"Failure evidence is understood or determined obsolete",
+			"Original task acceptance criteria are now satisfied or a targeted fix is applied",
+			"Original task can continue after repair",
+		},
 	})
+	if err != nil {
+		return domain.Task{}, err
+	}
+	if _, err := s.store.AddTaskEvent(ctx, domain.TaskEvent{
+		TaskID:  repair.ID,
+		Type:    "repair.linked",
+		Message: "repair task linked to failed task",
+		Payload: fmt.Sprintf(`{"failed_task_id":%q}`, repairTargetID),
+	}); err != nil {
+		return domain.Task{}, err
+	}
+	repair, err = s.store.TransitionTask(ctx, repair.ID, domain.TaskStatusReady, "repair task generated after failure")
+	return repair, err
+}
+
+func repairDepth(title string) int {
+	depth := 0
+	title = strings.TrimSpace(title)
+	for strings.HasPrefix(title, "Fix: ") {
+		depth++
+		title = strings.TrimSpace(strings.TrimPrefix(title, "Fix: "))
+	}
+	return depth
+}
+
+func (s *Service) completeRepairedTask(ctx context.Context, projectID string, repairTask domain.Task) error {
+	current := repairTask
+	seen := map[string]bool{}
+	for i := 0; i < 16; i++ {
+		if current.ID == "" || seen[current.ID] {
+			return nil
+		}
+		seen[current.ID] = true
+		failedTaskID, err := s.repairTargetID(ctx, current.ID)
+		if err != nil {
+			return err
+		}
+		if failedTaskID == "" {
+			return nil
+		}
+		failedTask, err := s.store.GetTask(ctx, failedTaskID)
+		if err != nil {
+			return err
+		}
+		switch failedTask.Status {
+		case domain.TaskStatusFailed, domain.TaskStatusReviewFailed:
+			updated, err := s.store.TransitionTask(ctx, failedTask.ID, domain.TaskStatusDone, "completed by repair task: "+repairTask.Title)
+			if err != nil {
+				return err
+			}
+			if err := s.emitTaskProgress(ctx, projectID, updated, domain.TaskStatusDone, "Task repaired and marked done: "+updated.Title); err != nil {
+				return err
+			}
+			if err := s.completeSupersededRepairTasks(ctx, projectID, updated.ID, repairTask.ID); err != nil {
+				return err
+			}
+			current = updated
+		default:
+			current = failedTask
+		}
+	}
+	return nil
+}
+
+func (s *Service) completeSupersededRepairTasks(ctx context.Context, projectID string, repairedTaskID string, successfulRepairTaskID string) error {
+	tasks, err := s.store.ListTasksByProject(ctx, projectID)
 	if err != nil {
 		return err
 	}
-	_, err = s.store.TransitionTask(ctx, repair.ID, domain.TaskStatusReady, "repair task generated after failure")
-	return err
+	for _, task := range tasks {
+		if task.ID == successfulRepairTaskID {
+			continue
+		}
+		switch task.Status {
+		case domain.TaskStatusFailed, domain.TaskStatusReviewFailed:
+		default:
+			continue
+		}
+		targetID, err := s.repairTargetID(ctx, task.ID)
+		if err != nil {
+			return err
+		}
+		if targetID != repairedTaskID {
+			continue
+		}
+		updated, err := s.store.TransitionTask(ctx, task.ID, domain.TaskStatusDone, "superseded by successful repair task")
+		if err != nil {
+			return err
+		}
+		if err := s.emitTaskProgress(ctx, projectID, updated, domain.TaskStatusDone, "Superseded repair task marked done: "+updated.Title); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) repairTargetID(ctx context.Context, repairTaskID string) (string, error) {
+	events, err := s.store.ListTaskEvents(ctx, repairTaskID)
+	if err != nil {
+		return "", err
+	}
+	for _, event := range events {
+		if event.Type != "repair.linked" {
+			continue
+		}
+		var payload struct {
+			FailedTaskID string `json:"failed_task_id"`
+		}
+		if err := json.Unmarshal([]byte(event.Payload), &payload); err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(payload.FailedTaskID), nil
+	}
+	return "", nil
+}
+
+func (s *Service) rootRepairTargetID(ctx context.Context, taskID string) (string, error) {
+	currentID := strings.TrimSpace(taskID)
+	seen := map[string]bool{}
+	for i := 0; i < 16; i++ {
+		if currentID == "" || seen[currentID] {
+			return currentID, nil
+		}
+		seen[currentID] = true
+		nextID, err := s.repairTargetID(ctx, currentID)
+		if err != nil {
+			return "", err
+		}
+		if nextID == "" {
+			return currentID, nil
+		}
+		currentID = nextID
+	}
+	return currentID, nil
 }
 
 func (s *Service) extractTaskMemories(ctx context.Context, projectID string, task domain.Task, attempt domain.TaskAttempt, review domain.ReviewResult) error {

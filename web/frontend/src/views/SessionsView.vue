@@ -1,217 +1,173 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api } from '../api'
 import StatusBadge from '../components/common/StatusBadge.vue'
 import type { Session, SessionContext } from '../api/types'
 
 const sessions = ref<Session[]>([])
+const selected = ref<Session | null>(null)
+const context = ref<SessionContext | null>(null)
 const loading = ref(true)
-const selectedSession = ref<Session | null>(null)
-const sessionContext = ref<SessionContext | null>(null)
-const contextLoading = ref(false)
-const statusFilter = ref<string>('')
-const acting = ref<string>('')
+const acting = ref(false)
+const filter = ref<string>('')
 
-const filteredSessions = computed(() => {
-  if (!statusFilter.value) return sessions.value
-  return sessions.value.filter(s => s.status === statusFilter.value)
+const filtered = computed(() => {
+  if (!filter.value) return sessions.value
+  return sessions.value.filter(s => s.status === filter.value)
 })
 
-const statusCounts = computed(() => {
-  const counts: Record<string, number> = {}
-  for (const s of sessions.value) {
-    counts[s.status] = (counts[s.status] || 0) + 1
-  }
-  return counts
+const counts = computed(() => {
+  const out: Record<string, number> = { '': sessions.value.length }
+  for (const session of sessions.value) out[session.status] = (out[session.status] || 0) + 1
+  return out
 })
 
-onMounted(async () => {
-  await refreshSessions()
-  loading.value = false
-})
+onMounted(refresh)
 
-async function refreshSessions() {
+async function refresh() {
+  loading.value = true
   sessions.value = await api.listSessions()
+  if (!selected.value && sessions.value.length > 0) await selectSession(sessions.value[0])
+  loading.value = false
 }
 
 async function selectSession(session: Session) {
-  selectedSession.value = session
-  sessionContext.value = null
-  contextLoading.value = true
-  sessionContext.value = await api.getSessionContext(session.id)
-  contextLoading.value = false
-}
-
-function closeDetail() {
-  selectedSession.value = null
-  sessionContext.value = null
-}
-
-async function runAction(action: 'pause' | 'resume' | 'expire' | 'delete') {
-  if (!selectedSession.value || acting.value) return
-  const id = selectedSession.value.id
-  acting.value = action
+  selected.value = session
+  context.value = null
   try {
-    if (action === 'pause') selectedSession.value = await api.pauseSession(id)
-    if (action === 'resume') selectedSession.value = await api.resumeSession(id)
-    if (action === 'expire') selectedSession.value = await api.expireSession(id)
+    context.value = await api.getSessionContext(session.id)
+  } catch {
+    context.value = null
+  }
+}
+
+async function run(action: 'pause' | 'resume' | 'expire' | 'delete') {
+  if (!selected.value || acting.value) return
+  acting.value = true
+  try {
+    if (action === 'pause') selected.value = await api.pauseSession(selected.value.id)
+    if (action === 'resume') selected.value = await api.resumeSession(selected.value.id)
+    if (action === 'expire') selected.value = await api.expireSession(selected.value.id)
     if (action === 'delete') {
-      await api.deleteSession(id)
-      closeDetail()
+      await api.deleteSession(selected.value.id)
+      selected.value = null
+      context.value = null
     }
-    await refreshSessions()
+    sessions.value = await api.listSessions()
   } finally {
-    acting.value = ''
+    acting.value = false
   }
 }
 
 function timeAgo(dateStr: string): string {
   if (!dateStr) return ''
-  const ms = Date.now() - new Date(dateStr).getTime()
-  const m = Math.floor(ms / 60000)
-  if (m < 1) return 'just now'
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
+  const minutes = Math.floor((Date.now() - new Date(dateStr).getTime()) / 60000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
 }
 
-function channelIcon(type: string): string {
-  switch (type) {
-    case 'cli': return '▸'
-    case 'web': return '◎'
-    case 'telegram': return '✈'
-    case 'whatsapp': return '⬡'
-    default: return '○'
-  }
-}
-
-function truncate(s: string, len: number): string {
-  if (!s) return ''
-  return s.length > len ? s.slice(0, len) + '...' : s
+function short(text: string, limit = 160): string {
+  if (!text) return ''
+  return text.length > limit ? `${text.slice(0, limit)}...` : text
 }
 </script>
 
 <template>
-  <div class="space-y-4">
-    <!-- Filter Bar -->
-    <div class="flex items-center justify-between">
-      <div class="flex items-center gap-2">
+  <div class="grid gap-4 lg:grid-cols-[360px_1fr]">
+    <section class="space-y-3">
+      <div class="flex flex-wrap gap-2">
         <button
-          v-for="s in ['', 'ACTIVE', 'PAUSED', 'COMPLETED', 'EXPIRED']"
-          :key="s"
-          @click="statusFilter = s"
-          :class="[
-            statusFilter === s ? 'bg-gray-700 text-gray-100' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800',
-            'rounded px-3 py-1.5 text-xs transition-colors'
+          v-for="item in [
+            { value: '', label: 'All' },
+            { value: 'ACTIVE', label: 'Active' },
+            { value: 'PAUSED', label: 'Paused' },
+            { value: 'COMPLETED', label: 'Completed' },
+            { value: 'EXPIRED', label: 'Expired' },
           ]"
+          :key="item.value"
+          @click="filter = item.value"
+          :class="[filter === item.value ? 'bg-gray-700 text-gray-100' : 'text-gray-500 hover:text-gray-300', 'rounded px-3 py-1.5 text-xs transition-colors']"
         >
-          {{ s || 'All' }}
-          <span v-if="s && statusCounts[s]" class="ml-1 text-gray-500">{{ statusCounts[s] }}</span>
+          {{ item.label }} {{ counts[item.value] || 0 }}
         </button>
       </div>
-      <p class="text-xs text-gray-600">{{ filteredSessions.length }} sessions</p>
-    </div>
 
-    <div v-if="loading" class="text-gray-500 text-sm">Loading...</div>
-    <div v-else-if="filteredSessions.length === 0" class="text-gray-600 text-sm">No sessions found.</div>
-
-    <!-- Session List -->
-    <div v-else class="space-y-2">
-      <div
-        v-for="s in filteredSessions"
-        :key="s.id"
-        @click="selectSession(s)"
-        :class="[
-          selectedSession?.id === s.id ? 'border-indigo-600 bg-gray-800/80' : 'border-gray-800 bg-gray-900 hover:border-gray-700',
-          'flex items-center gap-4 rounded-lg border px-4 py-3 cursor-pointer transition-colors'
-        ]"
-      >
-        <span class="text-base text-gray-500 w-6 text-center">{{ channelIcon(s.channel_type) }}</span>
-        <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-2">
-            <span class="text-sm text-gray-200 font-medium">{{ s.title || 'Untitled session' }}</span>
-            <span class="text-xs text-gray-600 font-mono">{{ s.id.slice(0, 8) }}</span>
+      <div v-if="loading" class="text-sm text-gray-500">Loading...</div>
+      <div v-else class="divide-y divide-gray-800 rounded-lg border border-gray-800 bg-gray-900">
+        <button
+          v-for="session in filtered"
+          :key="session.id"
+          @click="selectSession(session)"
+          :class="[selected?.id === session.id ? 'bg-indigo-900/20' : 'hover:bg-gray-800/50', 'block w-full px-4 py-3 text-left transition-colors']"
+        >
+          <div class="mb-1 flex items-center justify-between gap-2">
+            <span class="truncate text-sm font-medium text-gray-200">{{ session.title || session.id }}</span>
+            <StatusBadge :status="session.status" />
           </div>
-          <div class="flex items-center gap-3 mt-0.5">
-            <span class="text-xs text-gray-500">{{ s.channel_type }}/{{ s.channel_id }}</span>
-            <span v-if="s.user_id" class="text-xs text-gray-600">user: {{ s.user_id }}</span>
-            <span v-if="s.project_id" class="text-xs text-gray-600">project: {{ truncate(s.project_id, 8) }}</span>
+          <div class="flex items-center justify-between text-xs text-gray-600">
+            <span>{{ session.channel_type || 'web' }} · {{ session.channel_id || 'local' }}</span>
+            <span>{{ timeAgo(session.last_active_at) }}</span>
+          </div>
+        </button>
+        <div v-if="filtered.length === 0" class="px-4 py-8 text-center text-sm text-gray-600">No sessions</div>
+      </div>
+    </section>
+
+    <section class="min-w-0 rounded-lg border border-gray-800 bg-gray-900">
+      <div v-if="selected" class="space-y-5 p-5">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div class="min-w-0">
+            <h2 class="truncate text-base font-semibold text-gray-100">{{ selected.title || selected.id }}</h2>
+            <p class="mt-1 text-xs text-gray-500">{{ selected.id }}</p>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button @click="run('pause')" :disabled="acting || selected.status !== 'ACTIVE'" class="rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-300 disabled:opacity-40">Pause</button>
+            <button @click="run('resume')" :disabled="acting || selected.status === 'ACTIVE'" class="rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-300 disabled:opacity-40">Resume</button>
+            <button @click="run('expire')" :disabled="acting" class="rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-300 disabled:opacity-40">Expire</button>
+            <button @click="run('delete')" :disabled="acting" class="rounded border border-red-900/60 px-3 py-1.5 text-xs text-red-300 disabled:opacity-40">Delete</button>
           </div>
         </div>
-        <div class="flex items-center gap-3">
-          <span class="text-xs text-gray-600">{{ timeAgo(s.last_active_at) }}</span>
-          <StatusBadge :status="s.status" />
-        </div>
-      </div>
-    </div>
 
-    <!-- Session Detail Panel -->
-    <div v-if="selectedSession" class="rounded-lg border border-gray-800 bg-gray-900 p-5 space-y-4">
-      <div class="flex items-start justify-between">
-        <div>
-          <h3 class="text-base font-semibold text-gray-100">{{ selectedSession.title || 'Untitled session' }}</h3>
-          <p class="text-xs text-gray-500 font-mono mt-1">{{ selectedSession.id }}</p>
-        </div>
-        <div class="flex items-center gap-2">
-          <button v-if="selectedSession.status === 'ACTIVE'" @click="runAction('pause')" :disabled="!!acting" class="rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50">Pause</button>
-          <button v-if="selectedSession.status === 'PAUSED' || selectedSession.status === 'ACTIVE'" @click="runAction('resume')" :disabled="!!acting" class="rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50">Resume</button>
-          <button @click="runAction('expire')" :disabled="!!acting" class="rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-400 hover:bg-gray-800 disabled:opacity-50">Expire</button>
-          <button @click="runAction('delete')" :disabled="!!acting" class="rounded border border-red-900/60 px-3 py-1.5 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-50">Delete</button>
-          <button @click="closeDetail" class="text-gray-500 hover:text-gray-300 text-sm">x</button>
-        </div>
-      </div>
-
-      <!-- Session Info Grid -->
-      <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <div class="rounded border border-gray-800 bg-gray-950 p-3">
-          <div class="text-xs text-gray-500">Status</div>
-          <div class="mt-1"><StatusBadge :status="selectedSession.status" /></div>
-        </div>
-        <div class="rounded border border-gray-800 bg-gray-950 p-3">
-          <div class="text-xs text-gray-500">Channel</div>
-          <div class="mt-1 text-sm text-gray-200">{{ selectedSession.channel_type }} / {{ selectedSession.channel_id }}</div>
-        </div>
-        <div class="rounded border border-gray-800 bg-gray-950 p-3">
-          <div class="text-xs text-gray-500">User</div>
-          <div class="mt-1 text-sm text-gray-200">{{ selectedSession.user_id || '—' }}</div>
-        </div>
-        <div class="rounded border border-gray-800 bg-gray-950 p-3">
-          <div class="text-xs text-gray-500">Last Active</div>
-          <div class="mt-1 text-sm text-gray-200">{{ timeAgo(selectedSession.last_active_at) }}</div>
-        </div>
-      </div>
-
-      <!-- Project Link -->
-      <div v-if="selectedSession.project_id" class="flex items-center gap-2">
-        <span class="text-xs text-gray-500">Bound Project:</span>
-        <RouterLink :to="`/projects/${selectedSession.project_id}`" class="text-xs text-indigo-400 hover:text-indigo-300 font-mono">
-          {{ selectedSession.project_id }}
-        </RouterLink>
-      </div>
-
-      <!-- Runtime Context -->
-      <div>
-        <h4 class="text-sm font-medium text-gray-300 mb-2">Runtime Context</h4>
-        <div v-if="contextLoading" class="text-xs text-gray-500">Loading context...</div>
-        <div v-else-if="!sessionContext" class="text-xs text-gray-600">No saved runtime context.</div>
-        <div v-else class="space-y-2">
-          <div v-if="sessionContext.chain_decision && sessionContext.chain_decision !== '{}'" class="rounded border border-gray-800 bg-gray-950 p-3">
-            <div class="text-xs text-gray-500 mb-1">Chain Decision</div>
-            <pre class="text-xs text-gray-300 whitespace-pre-wrap break-all">{{ truncate(sessionContext.chain_decision, 200) }}</pre>
+        <div class="grid gap-3 md:grid-cols-3">
+          <div class="rounded border border-gray-800 bg-gray-950 p-3">
+            <div class="text-xs text-gray-600">Status</div>
+            <div class="mt-1"><StatusBadge :status="selected.status" /></div>
           </div>
-          <div v-if="sessionContext.intent_profile && sessionContext.intent_profile !== '{}'" class="rounded border border-gray-800 bg-gray-950 p-3">
-            <div class="text-xs text-gray-500 mb-1">Intent Profile</div>
-            <pre class="text-xs text-gray-300 whitespace-pre-wrap break-all">{{ truncate(sessionContext.intent_profile, 200) }}</pre>
+          <div class="rounded border border-gray-800 bg-gray-950 p-3">
+            <div class="text-xs text-gray-600">Last Active</div>
+            <div class="mt-1 text-sm text-gray-200">{{ timeAgo(selected.last_active_at) }}</div>
           </div>
-          <div v-if="sessionContext.memory_snapshot && sessionContext.memory_snapshot !== '[]'" class="rounded border border-gray-800 bg-gray-950 p-3">
-            <div class="text-xs text-gray-500 mb-1">Memory Snapshot</div>
-            <pre class="text-xs text-gray-300 whitespace-pre-wrap break-all">{{ truncate(sessionContext.memory_snapshot, 200) }}</pre>
+          <RouterLink
+            v-if="selected.project_id"
+            :to="`/projects/${selected.project_id}`"
+            class="rounded border border-gray-800 bg-gray-950 p-3 transition-colors hover:border-gray-700"
+          >
+            <div class="text-xs text-gray-600">Project</div>
+            <div class="mt-1 truncate text-sm text-indigo-300">{{ selected.project_id }}</div>
+          </RouterLink>
+          <div v-else class="rounded border border-gray-800 bg-gray-950 p-3">
+            <div class="text-xs text-gray-600">Project</div>
+            <div class="mt-1 text-sm text-gray-500">Unbound</div>
           </div>
-          <div class="text-xs text-gray-600">Context updated: {{ timeAgo(sessionContext.updated_at) }}</div>
         </div>
+
+        <div v-if="context" class="space-y-3">
+          <div>
+            <div class="mb-1 text-xs font-medium text-gray-500">Chain Decision</div>
+            <pre class="max-h-40 overflow-auto rounded bg-gray-950 p-3 text-xs text-gray-400">{{ short(context.chain_decision, 2000) }}</pre>
+          </div>
+          <div>
+            <div class="mb-1 text-xs font-medium text-gray-500">Runtime Context</div>
+            <pre class="max-h-96 overflow-auto rounded bg-gray-950 p-3 text-xs text-gray-400">{{ short(context.context_text, 6000) }}</pre>
+          </div>
+        </div>
+        <div v-else class="rounded border border-gray-800 bg-gray-950 p-5 text-sm text-gray-500">No saved runtime context</div>
       </div>
-    </div>
+      <div v-else class="p-12 text-center text-sm text-gray-600">Select a session</div>
+    </section>
   </div>
 </template>

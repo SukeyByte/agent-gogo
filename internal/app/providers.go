@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/SukeyByte/agent-gogo/internal/browser"
 	"github.com/SukeyByte/agent-gogo/internal/communication"
@@ -36,6 +37,31 @@ func newLLMProvider(cfg appconfig.Config) (provider.LLMProvider, error) {
 		return nil, err
 	}
 	return provider.NewTimeoutProvider(llm, cfg.LLM.Timeout), nil
+}
+
+// NewLLMFromConfig creates a new LLM provider from an LLMConfig (for hot-swap).
+func newLLMFromConfig(cfg appconfig.LLMConfig) (provider.LLMProvider, error) {
+	if cfg.Provider == "" || cfg.APIKey == "" || cfg.Model == "" {
+		return nil, fmt.Errorf("llm provider, api_key, and model are required")
+	}
+	timeout := cfg.Timeout
+	if timeout == 0 {
+		timeout = 120 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
+	thinking := cfg.ThinkingEnabled
+	llm, err := provider.NewRegisteredLLMProvider(cfg.Provider, provider.OpenAICompatibleConfig{
+		APIKey:          cfg.APIKey,
+		BaseURL:         cfg.BaseURL,
+		ChatModel:       cfg.Model,
+		ThinkingEnabled: &thinking,
+		ReasoningEffort: cfg.ReasoningEffort,
+		HTTPClient:      client,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return provider.NewTimeoutProvider(llm, timeout), nil
 }
 
 func newBrowserRuntime(ctx context.Context, cfg appconfig.Config) (*browser.Runtime, func() error, error) {

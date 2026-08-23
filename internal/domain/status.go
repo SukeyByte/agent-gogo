@@ -65,10 +65,12 @@ var taskTransitions = map[TaskStatus]map[TaskStatus]struct{}{
 	},
 	TaskStatusReviewFailed: {
 		TaskStatusReady:     {},
+		TaskStatusDone:      {},
 		TaskStatusCancelled: {},
 	},
 	TaskStatusFailed: {
 		TaskStatusReady:     {},
+		TaskStatusDone:      {},
 		TaskStatusCancelled: {},
 	},
 }

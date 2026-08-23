@@ -135,6 +135,55 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+// Save writes a Config to a YAML file at the given path.
+func Save(path string, cfg Config) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	var sb strings.Builder
+	sb.WriteString("llm:\n")
+	sb.WriteString("  provider: " + cfg.LLM.Provider + "\n")
+	sb.WriteString("  model: " + cfg.LLM.Model + "\n")
+	sb.WriteString("  base_url: " + cfg.LLM.BaseURL + "\n")
+	sb.WriteString("  api_key: " + cfg.LLM.APIKey + "\n")
+	sb.WriteString("  timeout_seconds: " + strconv.Itoa(int(cfg.LLM.Timeout.Seconds())) + "\n")
+	if cfg.LLM.ThinkingEnabled {
+		sb.WriteString("  thinking_enabled: true\n")
+	}
+	if cfg.LLM.ReasoningEffort != "" {
+		sb.WriteString("  reasoning_effort: " + cfg.LLM.ReasoningEffort + "\n")
+	}
+	sb.WriteString("browser:\n")
+	sb.WriteString("  provider: " + cfg.Browser.Provider + "\n")
+	sb.WriteString("  mcp_url: " + cfg.Browser.MCPURL + "\n")
+	sb.WriteString("  headless: " + strconv.FormatBool(cfg.Browser.Headless) + "\n")
+	sb.WriteString("  timeout_seconds: " + strconv.Itoa(int(cfg.Browser.Timeout.Seconds())) + "\n")
+	sb.WriteString("storage:\n")
+	sb.WriteString("  workspace_path: " + cfg.Storage.WorkspacePath + "\n")
+	sb.WriteString("  sqlite_path: " + cfg.Storage.SQLitePath + "\n")
+	sb.WriteString("  artifact_path: " + cfg.Storage.ArtifactPath + "\n")
+	sb.WriteString("  log_path: " + cfg.Storage.LogPath + "\n")
+	for i, root := range cfg.Storage.SkillRoots {
+		if i == 0 {
+			sb.WriteString("  skill_roots:\n")
+		}
+		sb.WriteString("    - " + root + "\n")
+	}
+	sb.WriteString("runtime:\n")
+	sb.WriteString("  context_max_chars: " + strconv.Itoa(cfg.Runtime.ContextMaxChars) + "\n")
+	sb.WriteString("  max_tasks_per_project: " + strconv.Itoa(cfg.Runtime.MaxTasksPerProject) + "\n")
+	sb.WriteString("security:\n")
+	sb.WriteString("  require_confirm_high_risk: " + strconv.FormatBool(cfg.Security.RequireConfirmHighRisk) + "\n")
+	sb.WriteString("  allow_shell: " + strconv.FormatBool(cfg.Security.AllowShell) + "\n")
+	sb.WriteString("communication:\n")
+	sb.WriteString("  channel_id: " + cfg.Communication.ChannelID + "\n")
+	sb.WriteString("  session_id: " + cfg.Communication.SessionID + "\n")
+	return os.WriteFile(path, []byte(sb.String()), 0o644)
+}
+
 func Default() Config {
 	return Config{
 		LLM: LLMConfig{

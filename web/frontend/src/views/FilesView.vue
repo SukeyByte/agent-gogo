@@ -13,18 +13,15 @@ onMounted(async () => {
   loading.value = false
 })
 
-function selectFile(file: FileEntry) {
+async function selectFile(file: FileEntry) {
   if (file.type === 'dir') return
   selectedFile.value = file
-  // Mock file content
-  if (file.path.includes('.md')) {
-    fileContent.value = `# ${file.name}\n\nThis is a mock file content for ${file.path}.\n\nSize: ${file.size} bytes`
-  } else if (file.path.includes('.patch')) {
-    fileContent.value = `--- a/internal/auth/session.go\n+++ b/internal/auth/session.go\n@@ -42,6 +42,8 @@\n func (s *Session) Validate() error {\n   if s.Expired() {\n     return ErrSessionExpired\n+    // TODO: refresh token\n+    return s.refreshToken()\n   }\n   return nil\n }`
-  } else if (file.path.includes('.db')) {
-    fileContent.value = `SQLite Database\nSize: ${(file.size / 1024 / 1024).toFixed(2)} MB\n\nTables: projects, tasks, task_dependencies, task_attempts, task_events, tool_calls, observations, test_results, review_results, artifacts`
-  } else {
-    fileContent.value = `Binary file: ${file.path}\nSize: ${file.size} bytes`
+  fileContent.value = 'Loading...'
+  try {
+    const result = await api.readFile(file.path)
+    fileContent.value = result.content
+  } catch (err: any) {
+    fileContent.value = `Preview unavailable: ${err.message}`
   }
 }
 

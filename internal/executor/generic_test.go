@@ -230,6 +230,39 @@ func TestGenericExecutorNormalizesCommonToolAliases(t *testing.T) {
 	}
 }
 
+func TestNormalizeActionArgsForTaskAnchorsFilePathToTaskTarget(t *testing.T) {
+	task := domain.Task{
+		Title:       "Append Chapter 3",
+		Description: "Append the chapter to artifacts/m10_6_full_validation_v11/writing/tide-city.md.",
+		AcceptanceCriteria: []string{
+			"artifacts/m10_6_full_validation_v11/writing/tide-city.md contains all three chapters",
+		},
+	}
+	args := map[string]any{
+		"path":    "artifacts/m10_6_full_validation_v11/tide-city.md",
+		"content": "chapter 3",
+		"append":  true,
+	}
+	got := normalizeActionArgsForTask(task, "file.write", args)
+	if got["path"] != "artifacts/m10_6_full_validation_v11/writing/tide-city.md" {
+		t.Fatalf("expected task target path, got %#v", got["path"])
+	}
+	if args["path"] != "artifacts/m10_6_full_validation_v11/tide-city.md" {
+		t.Fatalf("expected original args to remain unchanged, got %#v", args["path"])
+	}
+}
+
+func TestNormalizeActionArgsForTaskStripsAbsoluteWorkspacePrefix(t *testing.T) {
+	task := domain.Task{Title: "Read report"}
+	args := map[string]any{
+		"path": "/Users/sukeke/codes/agent-gogo/artifacts/m10_6_full_validation_v11/report.md",
+	}
+	got := normalizeActionArgsForTask(task, "file.read", args)
+	if got["path"] != "artifacts/m10_6_full_validation_v11/report.md" {
+		t.Fatalf("expected relative workspace path, got %#v", got["path"])
+	}
+}
+
 func TestGenericExecutorAutoFinishesDiagnosticTestRun(t *testing.T) {
 	ctx := context.Background()
 	sqlite, err := store.OpenSQLite(ctx, ":memory:")
@@ -621,6 +654,27 @@ func TestAutoFinishAcceptsReadOnlyFileTask(t *testing.T) {
 	}
 }
 
+func TestAutoFinishAcceptsGeneratedPlanningArtifact(t *testing.T) {
+	task := domain.Task{
+		Title:              "创作规划",
+		Description:        "为三章故事创作规划和章节大纲",
+		AcceptanceCriteria: []string{"规划文件已写入"},
+	}
+	summary, ok := autoFinishSummary(task, []actionEvent{{
+		Step:    1,
+		Action:  "tool_call",
+		Tool:    "artifact.write",
+		State:   "changed",
+		Summary: "wrote artifact docs/plans/tide-city-planning.md",
+	}})
+	if !ok {
+		t.Fatal("expected generated planning artifact to auto finish")
+	}
+	if !strings.Contains(summary, "generated text written") {
+		t.Fatalf("unexpected summary %q", summary)
+	}
+}
+
 func TestAutoFinishDoesNotAcceptBrowserOpenOnlyForInteractionTask(t *testing.T) {
 	task := domain.Task{
 		Title:              "Open URL and interact with page",
@@ -656,6 +710,25 @@ func TestAutoFinishAcceptsCompletedBrowserInteractionTask(t *testing.T) {
 		t.Fatal("expected completed browser interaction task to auto finish")
 	}
 	if !strings.Contains(summary, "browser evidence captured") {
+		t.Fatalf("unexpected summary %q", summary)
+	}
+}
+
+func TestAutoFinishAcceptsBrowserEvidenceReportAfterDraftRead(t *testing.T) {
+	task := domain.Task{
+		Title:              "Compile and Report Browser Evidence and Final Status",
+		Description:        "Read the saved draft and report browser evidence without further interaction.",
+		AcceptanceCriteria: []string{"Browser evidence and final status are reported"},
+	}
+	summary, ok := autoFinishSummary(task, []actionEvent{
+		{Step: 1, Action: "tool_call", Tool: "browser.open", State: "observed", Output: `{"dom_summary":"注册 X 登录"}`},
+		{Step: 2, Action: "tool_call", Tool: "browser.extract", State: "observed", Output: `{"dom_summary":"login wall"}`},
+		{Step: 3, Action: "tool_call", Tool: "file.read", State: "succeeded", Summary: "read twitter-draft.md", Output: `{"path":"twitter-draft.md"}`},
+	})
+	if !ok {
+		t.Fatal("expected browser evidence report to auto finish")
+	}
+	if !strings.Contains(summary, "browser evidence report captured") {
 		t.Fatalf("unexpected summary %q", summary)
 	}
 }

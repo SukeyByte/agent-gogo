@@ -89,6 +89,41 @@ func TestServiceRunsMinimalRuntimeLoop(t *testing.T) {
 	}
 }
 
+func TestRunProjectTasksMarksProjectCompletedWhenAllTasksDone(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	service := NewService(sqlite)
+	project, err := service.CreateProject(ctx, CreateProjectRequest{
+		Name: "Complete project",
+		Goal: "Run every task and close the project",
+	})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if _, err := service.PlanProject(ctx, project.ID); err != nil {
+		t.Fatalf("plan project: %v", err)
+	}
+	ran, err := service.RunProjectTasks(ctx, project.ID, 10)
+	if err != nil {
+		t.Fatalf("run project tasks: %v", err)
+	}
+	if ran != 1 {
+		t.Fatalf("expected one completed task, got %d", ran)
+	}
+	updated, err := sqlite.GetProject(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if updated.Status != domain.ProjectStatusCompleted {
+		t.Fatalf("expected project COMPLETED, got %s", updated.Status)
+	}
+}
+
 func TestServiceEmitsCommunicationIntents(t *testing.T) {
 	ctx := context.Background()
 	sqlite, err := store.OpenSQLite(ctx, ":memory:")
@@ -144,6 +179,311 @@ func TestServiceEmitsCommunicationIntents(t *testing.T) {
 	}
 	if !seenProgress {
 		t.Fatal("expected progress notifications during task lifecycle")
+	}
+}
+
+func TestNormalizeTaskDependenciesBreaksReflectionCycle(t *testing.T) {
+	tasks := normalizeTaskDependencies([]domain.Task{
+		{Title: "规划故事大纲", Description: "为三章故事建立大纲", AcceptanceCriteria: []string{"大纲完成"}, DependsOn: []string{"反思任务拆解与验收口径"}},
+		{Title: "撰写三章内容并写入文件", Description: "写入三章正文", AcceptanceCriteria: []string{"三章已写入"}, DependsOn: []string{"规划故事大纲"}},
+		{Title: "验证文件并汇报", Description: "验证文件存在并汇报路径", AcceptanceCriteria: []string{"文件存在", "结果已汇报"}},
+		{Title: "反思任务拆解与验收口径", Description: "反思任务拆解与验收口径", AcceptanceCriteria: []string{"反思完成"}, DependsOn: []string{"验证文件并汇报"}},
+	})
+	if taskDependsOn(tasks, "反思任务拆解与验收口径", "验证文件并汇报") {
+		t.Fatalf("reflection task must not depend on final verification: %#v", tasks)
+	}
+	if !taskDependsOn(tasks, "验证文件并汇报", "反思任务拆解与验收口径") {
+		t.Fatalf("final verification should wait for reflection: %#v", tasks)
+	}
+	if taskDependencyCycle(tasks) {
+		t.Fatalf("expected normalized tasks to be acyclic: %#v", tasks)
+	}
+}
+
+func TestNormalizeTaskDependenciesMakesFinalVerificationWaitForWork(t *testing.T) {
+	tasks := normalizeTaskDependencies([]domain.Task{
+		{Title: "制定故事蓝图", Description: "规划故事"},
+		{Title: "执行增量写作", Description: "写入三章内容"},
+		{Title: "最终验收与汇报", Description: "检查文件并汇报路径"},
+		{Title: "汇总执行状态与结果", Description: "总结项目结果"},
+	})
+	for _, finalTitle := range []string{"最终验收与汇报", "汇总执行状态与结果"} {
+		for _, dep := range []string{"制定故事蓝图", "执行增量写作"} {
+			if !taskDependsOn(tasks, finalTitle, dep) {
+				t.Fatalf("%s should depend on %s: %#v", finalTitle, dep, tasks)
+			}
+		}
+	}
+	if taskDependencyCycle(tasks) {
+		t.Fatalf("expected normalized tasks to be acyclic: %#v", tasks)
+	}
+}
+
+func TestNormalizeTaskDependenciesMakesSelfCheckWaitForWork(t *testing.T) {
+	tasks := normalizeTaskDependencies([]domain.Task{
+		{Title: "Read existing story content for website material", Description: "Read story source"},
+		{Title: "Create index.html with all required sections", Description: "Write page"},
+		{Title: "Create styles.css with complete visual design", Description: "Write CSS"},
+		{Title: "Create README.md with deployment instructions", Description: "Write deployment docs"},
+		{Title: "Self-check all three files for completeness and correctness", Description: "Read files and verify"},
+	})
+	for _, dep := range []string{
+		"Read existing story content for website material",
+		"Create index.html with all required sections",
+		"Create styles.css with complete visual design",
+		"Create README.md with deployment instructions",
+	} {
+		if !taskDependsOn(tasks, "Self-check all three files for completeness and correctness", dep) {
+			t.Fatalf("self-check should depend on %s: %#v", dep, tasks)
+		}
+	}
+	if taskDependencyCycle(tasks) {
+		t.Fatalf("expected normalized tasks to be acyclic: %#v", tasks)
+	}
+}
+
+func TestNormalizeTaskDependenciesRemovesBackEdgesToSelfCheck(t *testing.T) {
+	tasks := normalizeTaskDependencies([]domain.Task{
+		{Title: "研究上下文与可用资料", Description: "Read sources"},
+		{Title: "Plan site content and structure", Description: "Plan website", DependsOn: []string{"Read back and self-check all three files"}},
+		{Title: "Create index.html", Description: "Write HTML", DependsOn: []string{"Read back and self-check all three files"}},
+		{Title: "Create styles.css", Description: "Write CSS", DependsOn: []string{"Create index.html"}},
+		{Title: "Create README.md", Description: "Write docs"},
+		{Title: "Read back and self-check all three files", Description: "Verify all files"},
+	})
+	if taskDependsOn(tasks, "Plan site content and structure", "Read back and self-check all three files") {
+		t.Fatalf("work task must not depend on final self-check: %#v", tasks)
+	}
+	if taskDependsOn(tasks, "Create index.html", "Read back and self-check all three files") {
+		t.Fatalf("implementation task must not depend on final self-check: %#v", tasks)
+	}
+	for _, dep := range []string{"Plan site content and structure", "Create index.html", "Create styles.css", "Create README.md"} {
+		if !taskDependsOn(tasks, "Read back and self-check all three files", dep) {
+			t.Fatalf("self-check should depend on %s: %#v", dep, tasks)
+		}
+	}
+	if taskDependencyCycle(tasks) {
+		t.Fatalf("expected normalized tasks to be acyclic: %#v", tasks)
+	}
+}
+
+func TestNormalizeTaskDependenciesRemovesBackEdgesToValidateTask(t *testing.T) {
+	tasks := normalizeTaskDependencies([]domain.Task{
+		{Title: "研究上下文与可用资料", Description: "Read sources"},
+		{Title: "Write index.html with full content", Description: "Write HTML", DependsOn: []string{"Read and validate all three site files"}},
+		{Title: "Write styles.css for the showcase page", Description: "Write CSS", DependsOn: []string{"Read and validate all three site files", "Write index.html with full content"}},
+		{Title: "Write README.md with preview and deployment instructions", Description: "Write docs", DependsOn: []string{"Read and validate all three site files"}},
+		{Title: "Read and validate all three site files", Description: "Read files and validate"},
+	})
+	for _, task := range []string{
+		"Write index.html with full content",
+		"Write styles.css for the showcase page",
+		"Write README.md with preview and deployment instructions",
+	} {
+		if taskDependsOn(tasks, task, "Read and validate all three site files") {
+			t.Fatalf("%s must not depend on final validation: %#v", task, tasks)
+		}
+		if !taskDependsOn(tasks, "Read and validate all three site files", task) {
+			t.Fatalf("final validation should depend on %s: %#v", task, tasks)
+		}
+	}
+	if taskDependencyCycle(tasks) {
+		t.Fatalf("expected normalized tasks to be acyclic: %#v", tasks)
+	}
+}
+
+func TestNormalizeTaskDependenciesRemovesBackEdgesToVerifyTask(t *testing.T) {
+	tasks := normalizeTaskDependencies([]domain.Task{
+		{Title: "研究上下文与可用资料", Description: "Read sources"},
+		{Title: "Create index.html", Description: "Write HTML", DependsOn: []string{"Read and verify all three files"}},
+		{Title: "Create styles.css", Description: "Write CSS", DependsOn: []string{"Read and verify all three files"}},
+		{Title: "Create README.md", Description: "Write docs", DependsOn: []string{"Read and verify all three files"}},
+		{Title: "Read and verify all three files", Description: "Read files and verify"},
+	})
+	for _, task := range []string{"Create index.html", "Create styles.css", "Create README.md"} {
+		if taskDependsOn(tasks, task, "Read and verify all three files") {
+			t.Fatalf("%s must not depend on final verification: %#v", task, tasks)
+		}
+		if !taskDependsOn(tasks, "Read and verify all three files", task) {
+			t.Fatalf("final verification should depend on %s: %#v", task, tasks)
+		}
+	}
+	if taskDependencyCycle(tasks) {
+		t.Fatalf("expected normalized tasks to be acyclic: %#v", tasks)
+	}
+}
+
+func TestCompleteRepairedTaskPropagatesNestedRepairToRootTask(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+	service := NewService(sqlite)
+	project, err := sqlite.CreateProject(ctx, domain.Project{Name: "repair", Goal: "repair nested task"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	original, err := sqlite.CreateTask(ctx, domain.Task{
+		ProjectID:          project.ID,
+		Title:              "Original failed task",
+		Status:             domain.TaskStatusReviewFailed,
+		AcceptanceCriteria: []string{"accepted"},
+	})
+	if err != nil {
+		t.Fatalf("create original: %v", err)
+	}
+	firstRepair, err := sqlite.CreateTask(ctx, domain.Task{
+		ProjectID:          project.ID,
+		Title:              "Fix: Original failed task",
+		Status:             domain.TaskStatusReviewFailed,
+		AcceptanceCriteria: []string{"accepted"},
+	})
+	if err != nil {
+		t.Fatalf("create first repair: %v", err)
+	}
+	secondRepair, err := sqlite.CreateTask(ctx, domain.Task{
+		ProjectID:          project.ID,
+		Title:              "Fix: Fix: Original failed task",
+		Status:             domain.TaskStatusDone,
+		AcceptanceCriteria: []string{"accepted"},
+	})
+	if err != nil {
+		t.Fatalf("create second repair: %v", err)
+	}
+	if _, err := sqlite.AddTaskEvent(ctx, domain.TaskEvent{
+		TaskID:  firstRepair.ID,
+		Type:    "repair.linked",
+		Payload: `{"failed_task_id":"` + original.ID + `"}`,
+	}); err != nil {
+		t.Fatalf("link first repair: %v", err)
+	}
+	if _, err := sqlite.AddTaskEvent(ctx, domain.TaskEvent{
+		TaskID:  secondRepair.ID,
+		Type:    "repair.linked",
+		Payload: `{"failed_task_id":"` + firstRepair.ID + `"}`,
+	}); err != nil {
+		t.Fatalf("link second repair: %v", err)
+	}
+	if err := service.completeRepairedTask(ctx, project.ID, secondRepair); err != nil {
+		t.Fatalf("complete repaired task: %v", err)
+	}
+	updatedOriginal, err := sqlite.GetTask(ctx, original.ID)
+	if err != nil {
+		t.Fatalf("get original: %v", err)
+	}
+	if updatedOriginal.Status != domain.TaskStatusDone {
+		t.Fatalf("expected original repaired task to be DONE, got %s", updatedOriginal.Status)
+	}
+}
+
+func TestCompleteRepairedTaskMarksSupersededSiblingRepairsDone(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+	service := NewService(sqlite)
+	project, err := sqlite.CreateProject(ctx, domain.Project{Name: "repair", Goal: "repair sibling tasks"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	original, err := sqlite.CreateTask(ctx, domain.Task{
+		ProjectID: project.ID,
+		Title:     "Original failed task",
+		Status:    domain.TaskStatusFailed,
+	})
+	if err != nil {
+		t.Fatalf("create original: %v", err)
+	}
+	siblingRepair, err := sqlite.CreateTask(ctx, domain.Task{
+		ProjectID: project.ID,
+		Title:     "Fix: Original failed task",
+		Status:    domain.TaskStatusFailed,
+	})
+	if err != nil {
+		t.Fatalf("create sibling repair: %v", err)
+	}
+	successfulRepair, err := sqlite.CreateTask(ctx, domain.Task{
+		ProjectID: project.ID,
+		Title:     "Fix: Fix: Original failed task",
+		Status:    domain.TaskStatusDone,
+	})
+	if err != nil {
+		t.Fatalf("create successful repair: %v", err)
+	}
+	for _, repair := range []domain.Task{siblingRepair, successfulRepair} {
+		if _, err := sqlite.AddTaskEvent(ctx, domain.TaskEvent{
+			TaskID:  repair.ID,
+			Type:    "repair.linked",
+			Payload: `{"failed_task_id":"` + original.ID + `"}`,
+		}); err != nil {
+			t.Fatalf("link repair: %v", err)
+		}
+	}
+	if err := service.completeRepairedTask(ctx, project.ID, successfulRepair); err != nil {
+		t.Fatalf("complete repaired task: %v", err)
+	}
+	updatedSibling, err := sqlite.GetTask(ctx, siblingRepair.ID)
+	if err != nil {
+		t.Fatalf("get sibling repair: %v", err)
+	}
+	if updatedSibling.Status != domain.TaskStatusDone {
+		t.Fatalf("expected superseded sibling repair to be DONE, got %s", updatedSibling.Status)
+	}
+}
+
+func TestCreateRepairTaskStopsAtRepairDepthLimit(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+	service := NewService(sqlite)
+	project, err := sqlite.CreateProject(ctx, domain.Project{Name: "repair", Goal: "avoid repair loop"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task, err := sqlite.CreateTask(ctx, domain.Task{
+		ProjectID:          project.ID,
+		Title:              "Fix: Fix: Fix: Append Chapter 3",
+		Status:             domain.TaskStatusInProgress,
+		AcceptanceCriteria: []string{"chapter 3 appended"},
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	attempt, err := sqlite.CreateTaskAttempt(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("create attempt: %v", err)
+	}
+	if _, err := service.createRepairTask(ctx, project.ID, task, attempt, "executor.failed", errors.New("same failure")); err == nil {
+		t.Fatal("expected repair depth limit error")
+	} else if !strings.Contains(err.Error(), "repair limit reached") {
+		t.Fatalf("expected repair limit error, got %v", err)
+	}
+	tasks, err := sqlite.ListTasksByProject(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected no new repair task beyond limit, got %d tasks", len(tasks))
+	}
+	events, err := sqlite.ListTaskEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("list task events: %v", err)
+	}
+	seenLimit := false
+	for _, event := range events {
+		if event.Type == "repair.limit_reached" {
+			seenLimit = true
+		}
+	}
+	if !seenLimit {
+		t.Fatalf("expected repair.limit_reached event, got %#v", events)
 	}
 }
 
@@ -565,6 +905,57 @@ func TestServiceMarksTestingTaskFailedBeforeRepair(t *testing.T) {
 	}
 }
 
+func TestRunProjectTasksContinuesWithRepairTask(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	exec := &repairFlowExecutor{store: sqlite}
+	service := NewServiceWithComponents(
+		sqlite,
+		repairFlowPlanner{},
+		validator.NewMinimalTaskValidator(),
+		scheduler.NewReadyScheduler(sqlite),
+		exec,
+		tester.NewMinimalTester(sqlite),
+		reviewer.NewMinimalReviewer(sqlite),
+	)
+	project, err := service.CreateProject(ctx, CreateProjectRequest{Name: "repair-flow", Goal: "recover and continue"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if _, err := service.PlanProject(ctx, project.ID); err != nil {
+		t.Fatalf("plan project: %v", err)
+	}
+	ran, err := service.RunProjectTasks(ctx, project.ID, 10)
+	if err != nil {
+		t.Fatalf("run project tasks: %v", err)
+	}
+	if ran != 2 {
+		t.Fatalf("expected repair and dependent task to run, got %d", ran)
+	}
+	tasks, err := sqlite.ListTasksByProject(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	statusByTitle := map[string]domain.TaskStatus{}
+	for _, task := range tasks {
+		statusByTitle[task.Title] = task.Status
+	}
+	if statusByTitle["Breakable prerequisite"] != domain.TaskStatusDone {
+		t.Fatalf("expected failed original task to be marked done by repair, got %#v", statusByTitle)
+	}
+	if statusByTitle["Fix: Breakable prerequisite"] != domain.TaskStatusDone {
+		t.Fatalf("expected repair task done, got %#v", statusByTitle)
+	}
+	if statusByTitle["Dependent task"] != domain.TaskStatusDone {
+		t.Fatalf("expected dependent task to continue after repair, got %#v", statusByTitle)
+	}
+}
+
 func TestLimitContextTextAppliesRuntimeBudget(t *testing.T) {
 	got := limitContextText("abcdefghijklmnopqrstuvwxyz", 18)
 	if len(got) != 18 {
@@ -573,6 +964,31 @@ func TestLimitContextTextAppliesRuntimeBudget(t *testing.T) {
 	if got == "abcdefghijklmnopqrstuvwxyz" {
 		t.Fatal("expected context text to be truncated")
 	}
+}
+
+type repairFlowPlanner struct{}
+
+func (p repairFlowPlanner) PlanProject(ctx context.Context, req planner.PlanRequest) ([]domain.Task, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return []domain.Task{
+		{
+			ProjectID:          req.Project.ID,
+			Title:              "Breakable prerequisite",
+			Description:        "This task fails once and then is repaired",
+			Status:             domain.TaskStatusDraft,
+			AcceptanceCriteria: []string{"prerequisite recovered"},
+		},
+		{
+			ProjectID:          req.Project.ID,
+			Title:              "Dependent task",
+			Description:        "Continue after repaired prerequisite",
+			Status:             domain.TaskStatusDraft,
+			AcceptanceCriteria: []string{"dependent completed"},
+			DependsOn:          []string{"Breakable prerequisite"},
+		},
+	}, nil
 }
 
 type dependencyPlanner struct{}
@@ -701,6 +1117,43 @@ type failingTester struct {
 	store tester.Store
 }
 
+type repairFlowExecutor struct {
+	store  *store.SQLiteStore
+	failed bool
+}
+
+func (e *repairFlowExecutor) Execute(ctx context.Context, task domain.Task) (executor.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return executor.Result{}, err
+	}
+	inProgress, err := e.store.TransitionTask(ctx, task.ID, domain.TaskStatusInProgress, "repair flow executor started task")
+	if err != nil {
+		return executor.Result{}, err
+	}
+	attempt, err := e.store.CreateTaskAttempt(ctx, task.ID)
+	if err != nil {
+		return executor.Result{}, err
+	}
+	if task.Title == "Breakable prerequisite" && !e.failed {
+		e.failed = true
+		_, _ = e.store.CompleteTaskAttempt(ctx, attempt.ID, domain.AttemptStatusFailed, "forced executor failure")
+		return executor.Result{}, &executor.ExecutionError{Task: inProgress, Attempt: attempt, Err: errors.New("forced executor failure")}
+	}
+	if _, err := e.store.CreateObservation(ctx, domain.Observation{
+		AttemptID:   attempt.ID,
+		Type:        "agent.finish",
+		Summary:     "repair flow executor completed " + task.Title,
+		EvidenceRef: "repair-flow://" + task.ID,
+	}); err != nil {
+		return executor.Result{}, err
+	}
+	implemented, err := e.store.TransitionTask(ctx, inProgress.ID, domain.TaskStatusImplemented, "repair flow executor completed task")
+	if err != nil {
+		return executor.Result{}, err
+	}
+	return executor.Result{Task: implemented, Attempt: attempt}, nil
+}
+
 func (t failingTester) Test(ctx context.Context, task domain.Task, attempt domain.TaskAttempt) (tester.Result, error) {
 	if _, err := t.store.TransitionTask(ctx, task.ID, domain.TaskStatusTesting, "failing tester started"); err != nil {
 		return tester.Result{}, err
@@ -749,4 +1202,33 @@ func (e *contextRecordingExecutor) Execute(ctx context.Context, task domain.Task
 		return executor.Result{}, err
 	}
 	return executor.Result{Task: implemented, Attempt: attempt}, nil
+}
+
+func taskDependsOn(tasks []domain.Task, title string, dependency string) bool {
+	for _, task := range tasks {
+		if task.Title != title {
+			continue
+		}
+		for _, dep := range task.DependsOn {
+			if dep == dependency {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func taskDependencyCycle(tasks []domain.Task) bool {
+	depsByTitle := map[string][]string{}
+	for _, task := range tasks {
+		depsByTitle[task.Title] = task.DependsOn
+	}
+	for _, task := range tasks {
+		for _, dep := range task.DependsOn {
+			if domainDependencyReaches(depsByTitle, dep, task.Title, map[string]bool{}) {
+				return true
+			}
+		}
+	}
+	return false
 }

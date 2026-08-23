@@ -65,6 +65,10 @@ func (i *Index) Add(item Item) {
 	i.items[item.ID] = item
 }
 
+func (i *Index) Remove(id string) {
+	delete(i.items, id)
+}
+
 func (i *Index) Items() []Item {
 	items := make([]Item, 0, len(i.items))
 	for _, item := range i.items {

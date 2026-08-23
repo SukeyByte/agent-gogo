@@ -348,7 +348,7 @@ func engineeringSchemas() []Schema {
 		{"code.index", "Build a lightweight repository map and symbol index.", []string{"code", "index", "repository"}, []string{"code", "runtime"}, "low", "optional max file and output limits", "files, languages, and symbols"},
 		{"code.symbols", "Search indexed source symbols by query or path.", []string{"code", "symbols", "search"}, []string{"code", "runtime"}, "low", "query, path, and limit", "matching symbols"},
 		{"file.read", "Read a file inside the workspace root.", []string{"file", "read", "workspace"}, []string{"code", "document", "runtime"}, "low", "workspace relative file path", "file content"},
-		{"file.write", "Write a file inside the workspace root.", []string{"file", "write", "workspace"}, []string{"code", "document", "runtime"}, "medium", "workspace relative path and content", "written path and byte count"},
+		{"file.write", "Write or append a file inside the workspace root.", []string{"file", "write", "append", "workspace"}, []string{"code", "document", "runtime"}, "medium", "workspace relative path, content, optional append=true or mode=append", "written/appended path and byte count"},
 		{"file.patch", "Apply a small old/new text replacement to a workspace file.", []string{"file", "patch", "workspace"}, []string{"code", "runtime"}, "medium", "path, old text, new text", "patched path and replacement count"},
 		{"file.diff", "Return git diff for the workspace or a path.", []string{"file", "diff", "git"}, []string{"code", "runtime"}, "low", "optional path", "diff text"},
 		{"shell.run", "Run an allowlisted shell command in the workspace.", []string{"shell", "command", "test"}, []string{"code", "runtime"}, "medium", "allowlisted command", "exit status and output"},

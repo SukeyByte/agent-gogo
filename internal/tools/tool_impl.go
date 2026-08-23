@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/SukeyByte/agent-gogo/internal/codeindex"
@@ -115,13 +116,90 @@ func writeWorkspaceFile(ctx context.Context, root string, args map[string]any) (
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+	appendMode := boolArg(args["append"]) || strings.EqualFold(strings.TrimSpace(stringArg(args["mode"])), "append")
+	operation := "write"
+	writtenContent := content
+	if appendMode {
+		if existing, err := os.ReadFile(target); err == nil && strings.HasPrefix(content, string(existing)) {
+			writtenContent = strings.TrimPrefix(content, string(existing))
+		} else if err == nil {
+			writtenContent = trimExistingMarkdownSections(string(existing), content)
+		}
+		file, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := file.WriteString(writtenContent); err != nil {
+			_ = file.Close()
+			return nil, err
+		}
+		if err := file.Close(); err != nil {
+			return nil, err
+		}
+		operation = "append"
+	} else if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
 		return nil, err
 	}
 	return map[string]any{
-		"path":  artifactRef(root, target),
-		"bytes": len([]byte(content)),
+		"path":      artifactRef(root, target),
+		"bytes":     len([]byte(writtenContent)),
+		"operation": operation,
+		"appended":  appendMode,
 	}, nil
+}
+
+var markdownHeadingPattern = regexp.MustCompile(`(?m)^#{1,6}\s+(.+?)\s*$`)
+
+func trimExistingMarkdownSections(existing string, content string) string {
+	if strings.TrimSpace(existing) == "" || strings.TrimSpace(content) == "" {
+		return content
+	}
+	existingHeadings := map[string]struct{}{}
+	for _, match := range markdownHeadingPattern.FindAllStringSubmatch(existing, -1) {
+		if len(match) > 1 {
+			existingHeadings[normalizeMarkdownHeading(match[1])] = struct{}{}
+		}
+	}
+	if len(existingHeadings) == 0 {
+		return content
+	}
+	indices := markdownHeadingPattern.FindAllStringSubmatchIndex(content, -1)
+	for _, idx := range indices {
+		if len(idx) < 4 {
+			continue
+		}
+		heading := normalizeMarkdownHeading(content[idx[2]:idx[3]])
+		if heading == "" {
+			continue
+		}
+		if _, ok := existingHeadings[heading]; ok {
+			continue
+		}
+		suffix := content[idx[0]:]
+		if !strings.HasSuffix(existing, "\n") && !strings.HasPrefix(suffix, "\n") {
+			suffix = "\n\n" + suffix
+		}
+		return suffix
+	}
+	return content
+}
+
+func normalizeMarkdownHeading(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	replacer := strings.NewReplacer(
+		"“", "\"",
+		"”", "\"",
+		"「", "\"",
+		"」", "\"",
+		"《", "",
+		"》", "",
+		"\"", "",
+		"'", "",
+		"·", "",
+		" ", "",
+		"\t", "",
+	)
+	return replacer.Replace(value)
 }
 
 func patchWorkspaceFile(ctx context.Context, root string, args map[string]any) (map[string]any, error) {
@@ -446,6 +524,23 @@ func stringSliceArg(value any) []string {
 		return result
 	default:
 		return nil
+	}
+}
+
+func stringArg(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func boolArg(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		parsed := strings.ToLower(strings.TrimSpace(typed))
+		return parsed == "true" || parsed == "1" || parsed == "yes"
+	default:
+		return false
 	}
 }
 

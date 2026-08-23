@@ -17,7 +17,7 @@ export const mockDashboardStats: DashboardStats = {
 }
 
 export const mockProviders: ProviderStatus[] = [
-  { name: 'DeepSeek Chat', type: 'llm', status: 'connected', detail: 'deepseek-chat, latency 1.2s' },
+  { name: 'LLM Provider', type: 'llm', status: 'connected', detail: 'OpenAI-compatible, latency 1.2s' },
   { name: 'Chrome MCP', type: 'browser', status: 'connected', detail: 'http://127.0.0.1:9222' },
   { name: 'SQLite', type: 'storage', status: 'connected', detail: './data/agent.db (2.3MB)' },
   { name: 'OpenAI Embedding', type: 'embedding', status: 'disconnected', detail: 'API key not configured' },
@@ -243,7 +243,7 @@ export const mockChannels: ChannelInfo[] = [
 ]
 
 export const mockConfig: AppConfig = {
-  llm: { provider: 'deepseek', model: 'deepseek-chat', base_url: 'https://api.deepseek.com', api_key: 'sk-***masked***', timeout: 120 },
+  llm: { provider: 'openai_compatible', model: 'configured-chat-model', base_url: 'configured by environment', api_key: '***masked***', timeout: 120 },
   embedding: { provider: 'openai', model: 'text-embedding-3-small', base_url: 'https://api.openai.com', api_key: '' },
   browser: { provider: 'chrome_mcp', mcp_url: 'http://127.0.0.1:9222', headless: false, timeout: 60 },
   storage: { workspace_path: '.', sqlite_path: './data/agent.db', artifact_path: './data/artifacts', log_path: './logs', skill_roots: ['~/.claude/skills', '.claude/skills'], persona_path: './personas' },

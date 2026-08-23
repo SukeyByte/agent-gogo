@@ -49,11 +49,13 @@ func (p *LLMPlanner) PlanProject(ctx context.Context, req PlanRequest) ([]domain
 		return nil, errors.New("planner returned no tasks")
 	}
 	output.Tasks = pruneResearchAndReflectionForSimpleBrowser(req, output.Tasks)
+	output.Tasks = pruneResearchAndReflectionForCreativeWriting(req, output.Tasks)
 	if maxTasks := maxTasksForRequest(req); len(output.Tasks) > maxTasks {
 		return nil, fmt.Errorf("planner returned %d tasks, above max %d for this request", len(output.Tasks), maxTasks)
 	}
 	output.Tasks = ensureResearchAndReflectionTasks(req, output.Tasks)
 	output.Tasks = ensureL3MinimumDecomposition(req, output.Tasks)
+	output.Tasks = normalizePlannedDependencies(output.Tasks)
 
 	tasks := make([]domain.Task, 0, len(output.Tasks))
 	for _, planned := range output.Tasks {
@@ -117,9 +119,6 @@ func ensureResearchAndReflectionTasks(req PlanRequest, planned []plannedTask) []
 	reflectionTitle := "反思任务拆解与验收口径"
 	hasResearch := hasTaskMatching(planned, researchMarkers)
 	hasReflection := hasTaskMatching(planned, reflectionMarkers)
-	if hasResearch && hasReflection {
-		return planned
-	}
 	prefix := []plannedTask{}
 	researchDependency := firstTaskTitleMatching(planned, researchMarkers)
 	if !hasResearch {
@@ -188,8 +187,136 @@ func ensureResearchAndReflectionTasks(req PlanRequest, planned []plannedTask) []
 	return append(prefix, planned...)
 }
 
+func normalizePlannedDependencies(planned []plannedTask) []plannedTask {
+	if len(planned) == 0 {
+		return planned
+	}
+	out := append([]plannedTask(nil), planned...)
+	titleSet := map[string]struct{}{}
+	for _, task := range out {
+		if title := strings.TrimSpace(task.Title); title != "" {
+			titleSet[title] = struct{}{}
+		}
+	}
+	researchTitle := firstTaskTitleMatching(out, []string{"研究", "調研", "调研", "research", "context", "gather", "收集", "获取", "取得", "读取", "搜索"})
+	reflectionTitle := firstTaskTitleMatching(out, []string{"反思", "reflection", "review plan", "验收口径", "驗收口徑", "decomposition", "acceptance criteria"})
+	finalMarkers := []string{"最终", "最終", "验收", "驗收", "验证", "驗證", "检查", "檢查", "自检", "自檢", "自查", "复核", "覆核", "完整性", "汇报", "匯報", "总结", "總結", "汇总", "彙總", "final", "verify", "validate", "validation", "self-check", "self check", "selfcheck", "correctness", "completeness", "report", "summary"}
+	taskByTitle := map[string]plannedTask{}
+	finalByTitle := map[string]bool{}
+	for _, task := range out {
+		title := strings.TrimSpace(task.Title)
+		if title == "" {
+			continue
+		}
+		taskByTitle[title] = task
+		finalByTitle[title] = title != researchTitle && title != reflectionTitle && taskMatches(task, finalMarkers)
+	}
+	for i := range out {
+		title := strings.TrimSpace(out[i].Title)
+		isFinalTask := finalByTitle[title]
+		deps := make([]string, 0, len(out[i].DependsOn)+1)
+		seen := map[string]struct{}{}
+		addDep := func(dep string) {
+			dep = strings.TrimSpace(dep)
+			if dep == "" || dep == title {
+				return
+			}
+			if _, ok := titleSet[dep]; !ok {
+				return
+			}
+			if !isFinalTask {
+				if _, ok := taskByTitle[dep]; ok && finalByTitle[dep] {
+					return
+				}
+			}
+			if _, ok := seen[dep]; ok {
+				return
+			}
+			seen[dep] = struct{}{}
+			deps = append(deps, dep)
+		}
+		switch title {
+		case researchTitle:
+			// Research is the root discovery task. Let it run first even if the model
+			// accidentally attached downstream dependencies to it.
+		case reflectionTitle:
+			if researchTitle != "" && researchTitle != reflectionTitle {
+				addDep(researchTitle)
+			}
+		default:
+			for _, dep := range out[i].DependsOn {
+				addDep(dep)
+			}
+			if reflectionTitle != "" {
+				addDep(reflectionTitle)
+			} else if researchTitle != "" {
+				addDep(researchTitle)
+			}
+			if isFinalTask {
+				for _, candidate := range out {
+					if strings.TrimSpace(candidate.Title) == title || strings.TrimSpace(candidate.Title) == "" {
+						continue
+					}
+					if taskMatches(candidate, finalMarkers) {
+						continue
+					}
+					addDep(candidate.Title)
+				}
+			}
+		}
+		out[i].DependsOn = deps
+	}
+	return pruneCyclicDependencies(out)
+}
+
+func pruneCyclicDependencies(planned []plannedTask) []plannedTask {
+	out := append([]plannedTask(nil), planned...)
+	depsByTitle := map[string][]string{}
+	for _, task := range out {
+		depsByTitle[task.Title] = append([]string(nil), task.DependsOn...)
+	}
+	for i := range out {
+		title := strings.TrimSpace(out[i].Title)
+		kept := out[i].DependsOn[:0]
+		for _, dep := range out[i].DependsOn {
+			depsByTitle[title] = kept
+			if reachesDependency(depsByTitle, dep, title, map[string]bool{}) {
+				continue
+			}
+			kept = append(kept, dep)
+		}
+		out[i].DependsOn = kept
+		depsByTitle[title] = append([]string(nil), kept...)
+	}
+	return out
+}
+
+func reachesDependency(depsByTitle map[string][]string, from string, target string, seen map[string]bool) bool {
+	from = strings.TrimSpace(from)
+	target = strings.TrimSpace(target)
+	if from == "" || target == "" {
+		return false
+	}
+	if from == target {
+		return true
+	}
+	if seen[from] {
+		return false
+	}
+	seen[from] = true
+	for _, next := range depsByTitle[from] {
+		if reachesDependency(depsByTitle, next, target, seen) {
+			return true
+		}
+	}
+	return false
+}
+
 func needsResearchAndReflection(req PlanRequest) bool {
 	if isSimpleBrowserReadRequest(req) {
+		return false
+	}
+	if isCreativeWritingRequest(req) {
 		return false
 	}
 	fields := []string{
@@ -206,6 +333,29 @@ func needsResearchAndReflection(req PlanRequest) bool {
 	}
 	for _, marker := range []string{"medium", "high", "complex", "code", "web", "browser", "debug", "fix", "修复", "调试", "研究", "网页"} {
 		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCreativeWritingRequest(req PlanRequest) bool {
+	text := strings.ToLower(strings.Join([]string{
+		req.UserInput,
+		req.Project.Goal,
+		req.IntentProfile.TaskType,
+		req.IntentProfile.Complexity,
+		strings.Join(req.IntentProfile.Domains, " "),
+	}, " "))
+	if hasAnyText(text, "code", "debug", "browser", "http://", "https://", "网页", "浏览器", "调试", "研究", "调研") {
+		return false
+	}
+	return hasAnyText(text, "story", "fiction", "novel", "chapter", "creative writing", "故事", "小说", "章节", "长篇写作", "短篇", "科幻", "创作")
+}
+
+func hasAnyText(text string, markers ...string) bool {
+	for _, marker := range markers {
+		if strings.Contains(text, strings.ToLower(marker)) {
 			return true
 		}
 	}
@@ -238,6 +388,37 @@ func isSimpleBrowserReadRequest(req PlanRequest) bool {
 		}
 	}
 	return true
+}
+
+func pruneResearchAndReflectionForCreativeWriting(req PlanRequest, planned []plannedTask) []plannedTask {
+	if !isCreativeWritingRequest(req) {
+		return planned
+	}
+	pruned := make([]plannedTask, 0, len(planned))
+	removed := map[string]struct{}{}
+	for _, task := range planned {
+		if taskMatches(task, []string{"研究", "research", "context", "反思", "reflection", "验收口径", "decomposition"}) {
+			if title := strings.TrimSpace(task.Title); title != "" {
+				removed[title] = struct{}{}
+			}
+			continue
+		}
+		pruned = append(pruned, task)
+	}
+	if len(pruned) == 0 {
+		return planned
+	}
+	for i := range pruned {
+		deps := pruned[i].DependsOn[:0]
+		for _, dependency := range pruned[i].DependsOn {
+			if _, ok := removed[dependency]; ok {
+				continue
+			}
+			deps = append(deps, dependency)
+		}
+		pruned[i].DependsOn = deps
+	}
+	return pruned
 }
 
 func pruneResearchAndReflectionForSimpleBrowser(req PlanRequest, planned []plannedTask) []plannedTask {

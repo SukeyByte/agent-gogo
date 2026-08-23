@@ -236,3 +236,86 @@ func tokenMatch(haystack string, query string) bool {
 	}
 	return false
 }
+
+// AddCard adds a pre-parsed Card to the registry (used after install).
+func (r *Registry) AddCard(card Card) {
+	r.cards[card.ID] = card
+}
+
+// ParseSkillCard parses a SKILL.md file and returns its Card.
+func ParseSkillCard(ctx context.Context, path string) (Card, error) {
+	return parseCard(ctx, path)
+}
+
+// --- Mutation methods ---
+
+func formatYAMLList(items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	sorted := append([]string(nil), items...)
+	sort.Strings(sorted)
+	return "[" + strings.Join(sorted, ",") + "]"
+}
+
+func sanitizeDirName(name string) string {
+	var out strings.Builder
+	for _, ch := range name {
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' {
+			out.WriteRune(ch)
+		}
+	}
+	result := out.String()
+	if result == "" {
+		result = "skill"
+	}
+	return result
+}
+
+// WriteSkillFile writes a SKILL.md file with YAML frontmatter + body.
+func WriteSkillFile(ctx context.Context, dir string, name string, description string, allowedTools []string, body string) (Card, error) {
+	if err := ctx.Err(); err != nil {
+		return Card{}, err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return Card{}, err
+	}
+	path := filepath.Join(dir, "SKILL.md")
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	sb.WriteString("name: " + name + "\n")
+	sb.WriteString("description: " + description + "\n")
+	sb.WriteString("allowed-tools: " + formatYAMLList(allowedTools) + "\n")
+	sb.WriteString("---\n")
+	if body != "" {
+		sb.WriteString(body)
+	}
+	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
+		return Card{}, err
+	}
+	return parseCard(ctx, path)
+}
+
+func (r *Registry) Create(ctx context.Context, root string, name string, description string, allowedTools []string, body string) (Card, error) {
+	dirName := sanitizeDirName(strings.ToLower(strings.ReplaceAll(name, " ", "-")))
+	dir := filepath.Join(root, dirName)
+	card, err := WriteSkillFile(ctx, dir, name, description, allowedTools, body)
+	if err != nil {
+		return Card{}, err
+	}
+	r.cards[card.ID] = card
+	return card, nil
+}
+
+func (r *Registry) Delete(ctx context.Context, id string) error {
+	card, ok := r.cards[id]
+	if !ok {
+		return ErrSkillNotFound
+	}
+	dir := filepath.Dir(card.Path)
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	delete(r.cards, id)
+	return nil
+}
