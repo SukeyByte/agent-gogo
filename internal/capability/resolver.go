@@ -105,10 +105,14 @@ func (r *Registry) ResolveTool(ctx context.Context, req ToolRequest) (ToolResolu
 	if req.Policy.AllowedTools != nil && !req.Policy.AllowedTools[toolName] {
 		return ToolResolution{}, fmt.Errorf("%w: %s is not allowed", ErrToolUnavailable, toolName)
 	}
+	// Shell policy: the master switch enables shell tools outright; turning
+	// it off switches to allowlist-only mode (full block when no allowlist
+	// is configured). The exec-style syntax firewall in the tool runtime
+	// applies in every mode.
 	if spec.RequiresShell && !req.Policy.AllowShell {
-		return ToolResolution{}, fmt.Errorf("%w: shell is disabled for %s", ErrToolUnavailable, toolName)
-	}
-	if spec.RequiresShell && len(req.Policy.ShellAllowlist) > 0 {
+		if len(req.Policy.ShellAllowlist) == 0 {
+			return ToolResolution{}, fmt.Errorf("%w: shell is disabled for %s", ErrToolUnavailable, toolName)
+		}
 		command, _ := req.Args["command"].(string)
 		if !ShellCommandAllowed(command, req.Policy.ShellAllowlist) {
 			return ToolResolution{}, fmt.Errorf("%w: shell command is not allowlisted for %s", ErrToolUnavailable, toolName)

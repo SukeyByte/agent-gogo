@@ -194,12 +194,25 @@ func TestRuntimeBlocksShellWhenPolicyDisallowsIt(t *testing.T) {
 	}
 }
 
-func TestRuntimeBlocksShellWhenCommandNotAllowlisted(t *testing.T) {
+func TestRuntimeShellPolicyModes(t *testing.T) {
 	ctx := context.Background()
-	runtime := NewBuiltinRuntime(nil, t.TempDir())
-	runtime.UseSecurityPolicy(SecurityPolicy{AllowShell: true, ShellAllowlist: []string{"go test"}}, nil)
 
-	response, err := runtime.Call(ctx, CallRequest{
+	// Master switch on: commands run without allowlist screening (the
+	// exec-style syntax firewall still applies).
+	enabled := NewBuiltinRuntime(nil, t.TempDir())
+	enabled.UseSecurityPolicy(SecurityPolicy{AllowShell: true, ShellAllowlist: []string{"go test"}}, nil)
+	resp, err := enabled.Call(ctx, CallRequest{Name: "shell.run", Args: map[string]any{"command": "echo off-switch-ignored"}})
+	if err != nil {
+		t.Fatalf("expected master switch to bypass allowlist, got %v", err)
+	}
+	if !resp.Result.Success {
+		t.Fatalf("expected success, got %#v", resp.Result)
+	}
+
+	// Master switch off + allowlist: allowlist-only mode.
+	restricted := NewBuiltinRuntime(nil, t.TempDir())
+	restricted.UseSecurityPolicy(SecurityPolicy{AllowShell: false, ShellAllowlist: []string{"go test"}}, nil)
+	response, err := restricted.Call(ctx, CallRequest{
 		Name: "shell.run",
 		Args: map[string]any{"command": "rm -rf ."},
 	})
@@ -212,6 +225,14 @@ func TestRuntimeBlocksShellWhenCommandNotAllowlisted(t *testing.T) {
 	if !strings.Contains(response.ToolCall.Error, "not allowlisted") {
 		t.Fatalf("expected allowlist error, got %q", response.ToolCall.Error)
 	}
+
+	// Master switch off + empty allowlist: fully disabled.
+	blocked := NewBuiltinRuntime(nil, t.TempDir())
+	blocked.UseSecurityPolicy(SecurityPolicy{AllowShell: false}, nil)
+	_, err = blocked.Call(ctx, CallRequest{Name: "shell.run", Args: map[string]any{"command": "go test ./..."}})
+	if err == nil || !strings.Contains(err.Error(), "shell is disabled") {
+		t.Fatalf("expected disabled error, got %v", err)
+	}
 }
 
 func TestRuntimeNormalizesTestRunPackagePatternBeforePolicy(t *testing.T) {
@@ -222,7 +243,7 @@ func TestRuntimeNormalizesTestRunPackagePatternBeforePolicy(t *testing.T) {
 		t.Fatalf("write smoke file: %v", err)
 	}
 	runtime := NewBuiltinRuntime(nil, root)
-	runtime.UseSecurityPolicy(SecurityPolicy{AllowShell: true, ShellAllowlist: []string{"go test"}}, nil)
+	runtime.UseSecurityPolicy(SecurityPolicy{AllowShell: false, ShellAllowlist: []string{"go test"}}, nil)
 
 	response, err := runtime.Call(ctx, CallRequest{
 		Name: "test.run",

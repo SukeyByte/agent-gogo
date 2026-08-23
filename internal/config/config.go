@@ -194,7 +194,7 @@ func Default() Config {
 		},
 		Security: SecurityConfig{
 			RequireConfirmHighRisk: true,
-			AllowShell:             false,
+			AllowShell:             true,
 			ShellAllowlist:         []string{"go test", "go build", "go run", "git status", "git diff"},
 		},
 		Session: SessionConfig{

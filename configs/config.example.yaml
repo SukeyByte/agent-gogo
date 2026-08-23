@@ -47,14 +47,18 @@ runtime:
   enable_auto_repair: true
 
 security:
+  # Shell tools run single exec-style commands (no pipes/redirects/globs/
+  # substitution) and only prompt for confirmation on destructive git ops.
   require_confirm_high_risk: true
-  allow_shell: false
-  shell_allowlist:
-    - "go test"
-    - "go build"
-    - "go run"
-    - "git status"
-    - "git diff"
+  # Master switch: true (default) enables shell/test tools directly.
+  # Set false to fall back to allowlist-only mode; with no allowlist
+  # entries, shell tools are fully disabled.
+  allow_shell: true
+  # Allowlist mode (used only when allow_shell is false):
+  # shell_allowlist:
+  #   - "go test"
+  #   - "go build"
+  #   - "node"
 
 # External MCP servers: tools are registered as mcp.<name>.<tool>.
 # Use command+args for stdio servers, or url for streamable HTTP servers.
