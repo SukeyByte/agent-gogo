@@ -87,6 +87,8 @@ type Service struct {
 	decisionByProjectID  map[string]chain.Decision
 	profileByProjectID   map[string]intentpkg.Profile
 	parallelism          int
+	taskSink             func(TaskRunResult, error)
+	runDispatcher        func(projectID string)
 	contextMaxChars      int
 	discovery            discovery.Loop
 }
@@ -233,6 +235,20 @@ func (s *Service) UseContextAssets(functions function.Registry, skills *skill.Re
 
 func (s *Service) UseMemoryPersistence(path string) {
 	s.memoryPersistPath = strings.TrimSpace(path)
+}
+
+// UseRunDispatcher routes project-run triggers through the given callback
+// (e.g. a task queue) instead of spawning a goroutine per event. When unset,
+// triggers fall back to an internal background goroutine.
+func (s *Service) UseRunDispatcher(dispatch func(projectID string)) {
+	s.runDispatcher = dispatch
+}
+
+// UseTaskSink registers a callback invoked after every task run, both on
+// success and failure. It lets CLI/web frontends log per-task progress
+// while the run loop stays inside the service.
+func (s *Service) UseTaskSink(sink func(TaskRunResult, error)) {
+	s.taskSink = sink
 }
 
 // UseParallelism sets how many tasks of one project may run at once.

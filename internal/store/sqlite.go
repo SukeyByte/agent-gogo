@@ -30,6 +30,10 @@ func OpenSQLite(ctx context.Context, path string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	store := &SQLiteStore{db: db}
 	if err := store.Migrate(ctx); err != nil {
 		_ = db.Close()

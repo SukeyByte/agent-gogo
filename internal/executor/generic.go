@@ -164,7 +164,11 @@ func (e *GenericExecutor) Execute(ctx context.Context, task domain.Task) (Result
 			if summary == "" {
 				summary = "generic action loop finished"
 			}
-			if ok, reason := finishEvidenceReady(inProgress, events); !ok {
+			toolNames := make([]string, 0)
+			for _, spec := range e.tools.ListSpecs() {
+				toolNames = append(toolNames, spec.Name)
+			}
+			if ok, reason := finishEvidenceReady(inProgress, events, toolNames); !ok {
 				events = append(events, actionEvent{
 					Step:    step,
 					Action:  "finish",

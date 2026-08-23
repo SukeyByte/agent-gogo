@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -18,8 +17,8 @@ import (
 	"github.com/SukeyByte/agent-gogo/internal/memory"
 	"github.com/SukeyByte/agent-gogo/internal/observability"
 	"github.com/SukeyByte/agent-gogo/internal/persona"
-	"github.com/SukeyByte/agent-gogo/internal/provider"
 	"github.com/SukeyByte/agent-gogo/internal/planner"
+	"github.com/SukeyByte/agent-gogo/internal/provider"
 	"github.com/SukeyByte/agent-gogo/internal/reviewer"
 	appruntime "github.com/SukeyByte/agent-gogo/internal/runtime"
 	"github.com/SukeyByte/agent-gogo/internal/scheduler"
@@ -163,31 +162,19 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 	if limit <= 0 {
 		limit = 50
 	}
-	ranTasks := 0
-	consecutiveFailures := 0
-	for ranTasks < limit {
-		result, err := service.RunNextTask(ctx, project.ID)
-		if errors.Is(err, sql.ErrNoRows) {
-			break
-		}
+	// RunProjectTasks owns the run loop: sequential or parallel claiming,
+	// repair-task recovery, and project completion, while the sink gives the
+	// CLI per-task progress lines.
+	service.UseTaskSink(func(result appruntime.TaskRunResult, err error) {
 		if err != nil {
-			var taskErr *appruntime.TaskFailedError
-			// A failed task queues a repair task; keep the run going instead
-			// of abandoning remaining and recovery tasks. The budget stops a
-			// runaway repair-of-repair loop.
-			if errors.As(err, &taskErr) && consecutiveFailures < 2 {
-				consecutiveFailures++
-				logChannel(ctx, commRuntime, cfg, "task", taskErr.Error()+" (repair queued, continuing)")
-				continue
-			}
-			return err
+			logChannel(ctx, commRuntime, cfg, "task", result.Task.Title+" -> "+string(result.Task.Status)+" (repair queued, continuing)")
+			return
 		}
-		consecutiveFailures = 0
-		ranTasks++
 		logChannel(ctx, commRuntime, cfg, "task", fmt.Sprintf("%s -> %s", result.Task.Title, result.Task.Status))
-	}
-	if ranTasks == limit {
-		return fmt.Errorf("max task limit reached: %d", limit)
+	})
+	ranTasks, runErr := service.RunProjectTasks(ctx, project.ID, limit)
+	if runErr != nil {
+		return runErr
 	}
 	logChannel(ctx, commRuntime, cfg, "output", fmt.Sprintf("project_id=%s completed_tasks=%d log_file=%s", project.ID, ranTasks, logger.Path()))
 	return logger.Log(ctx, "channel.output", map[string]any{

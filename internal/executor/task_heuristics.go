@@ -4,9 +4,10 @@ import (
 	"strings"
 
 	"github.com/SukeyByte/agent-gogo/internal/domain"
+	"regexp"
 )
 
-func finishEvidenceReady(task domain.Task, events []actionEvent) (bool, string) {
+func finishEvidenceReady(task domain.Task, events []actionEvent, availableTools []string) (bool, string) {
 	hasSuccessfulToolEvidence := false
 	hasSourceRead := false
 	hasBrowserRead := false
@@ -60,7 +61,53 @@ func finishEvidenceReady(task domain.Task, events []actionEvent) (bool, string) 
 	if taskNeedsSourceRead(task) && !hasSourceRead {
 		return false, "finish requires file.read evidence for this task"
 	}
+	if uncalled := impliedUncalledTools(task, events, availableTools); len(uncalled) > 0 {
+		return false, "finish requires calling tool(s) named by the task: " + strings.Join(uncalled, ", ")
+	}
 	return true, ""
+}
+
+var toolTokenPattern = regexp.MustCompile(`[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]+)+`)
+
+// impliedUncalledTools returns tools that the task text explicitly names
+// (e.g. "must call notes.add") which have not been successfully invoked yet.
+// A token only counts when it uniquely matches a registered tool name, so
+// prose and file paths never block a finish.
+func impliedUncalledTools(task domain.Task, events []actionEvent, availableTools []string) []string {
+	if len(availableTools) == 0 {
+		return nil
+	}
+	text := strings.ToLower(task.Title + "\n" + task.Description + "\n" + strings.Join(task.AcceptanceCriteria, "\n"))
+	called := map[string]bool{}
+	for _, event := range events {
+		if event.State == "succeeded" || event.State == "changed" || event.State == "verified" {
+			called[event.Tool] = true
+		}
+	}
+	var uncalled []string
+	seen := map[string]bool{}
+	for _, token := range toolTokenPattern.FindAllString(text, -1) {
+		if seen[token] {
+			continue
+		}
+		seen[token] = true
+		var matchedTool string
+		for _, name := range availableTools {
+			if name == token || strings.HasSuffix(name, "."+token) {
+				matchedTool = name
+				break
+			}
+		}
+		if matchedTool == "" || called[matchedTool] {
+			continue
+		}
+		// Also allow an exact-name event (token equal to the registered name).
+		if called[token] {
+			continue
+		}
+		uncalled = append(uncalled, matchedTool)
+	}
+	return uncalled
 }
 
 func autoFinishSummary(task domain.Task, events []actionEvent) (string, bool) {

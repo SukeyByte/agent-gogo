@@ -47,8 +47,14 @@ func (r *Runtime) RegisterMCPTools(server MCPClients) error {
 		if description == "" {
 			description = "Tool " + toolName + " from MCP server " + serverName + "."
 		}
+		// Servers often namespace their own tools ("notes.add"); avoid
+		// doubling the server prefix into "mcp.notes.notes.add".
+		registeredName := MCPToolPrefix + serverName + "." + toolName
+		if prefix := serverName + "."; strings.HasPrefix(toolName, prefix) {
+			registeredName = MCPToolPrefix + toolName
+		}
 		r.Register(Spec{
-			Name:        MCPToolPrefix + serverName + "." + toolName,
+			Name:        registeredName,
 			Description: description,
 			RiskLevel:   "medium",
 			InputSchema: schema,

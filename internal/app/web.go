@@ -101,6 +101,7 @@ func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Wri
 				}
 				_, _ = bridge.service.RunProjectTasks(taskCtx, projectID, limit)
 			})
+			bridge.service.UseRunDispatcher(func(projectID string) { queue.Submit(projectID) })
 			bridge.queue = queue
 			defer bridge.Close()
 		}
@@ -188,7 +189,10 @@ func loadWebAssets(ctx context.Context, cfg appconfig.Config) (webAssets, error)
 }
 
 func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQLiteStore, llm provider.LLMProvider, hub *webconsole.SSEHub, channelID, sessionID string, assets webAssets) (*runtimeServiceBridge, error) {
-	logger := observability.NoopLogger{}
+	var logger observability.Logger = observability.NoopLogger{}
+	if fileLogger, fileErr := observability.NewFileLogger(cfg.Storage.LogPath, "web"); fileErr == nil {
+		logger = fileLogger
+	}
 	loggedLLM := observability.NewLoggingLLMProvider(llm, logger)
 
 	commRuntime := communication.NewRuntime(communication.NewMemoryOutbox(), communication.NewRenderer())

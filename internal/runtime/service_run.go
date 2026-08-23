@@ -51,7 +51,24 @@ func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunRes
 
 // runClaimedTask drives one already-claimed task through the full
 // execute -> test -> review pipeline. Safe to call from multiple goroutines.
-func (s *Service) runClaimedTask(ctx context.Context, projectID string, task domain.Task) (TaskRunResult, error) {
+func (s *Service) runClaimedTask(ctx context.Context, projectID string, task domain.Task) (result TaskRunResult, err error) {
+	defer func() {
+		if s.taskSink == nil {
+			return
+		}
+		final := result
+		if err != nil {
+			final.Task = task
+			if fresh, fetchErr := s.store.GetTask(ctx, task.ID); fetchErr == nil {
+				final.Task = fresh
+			}
+		}
+		s.taskSink(final, err)
+	}()
+	return s.runClaimedTaskPipeline(ctx, projectID, task)
+}
+
+func (s *Service) runClaimedTaskPipeline(ctx context.Context, projectID string, task domain.Task) (TaskRunResult, error) {
 	if err := s.emitTaskProgress(ctx, projectID, task, domain.TaskStatusInProgress, "Task started: "+task.Title); err != nil {
 		return TaskRunResult{}, err
 	}
@@ -374,7 +391,7 @@ func (s *Service) HandleChannelEvent(ctx context.Context, event ChannelEvent) er
 			s.emitProjectBlocked(ctx, project.ID, "Project blocked during planning: "+err.Error())
 			return nil
 		}
-		go s.runProjectTasksInBackground(project.ID)
+		s.dispatchProjectRun(project.ID)
 		return nil
 	case "task.retry":
 		return s.RetryTask(ctx, event.TaskID)
@@ -383,6 +400,14 @@ func (s *Service) HandleChannelEvent(ctx context.Context, event ChannelEvent) er
 	default:
 		return s.log(ctx, "runtime.channel_event", event)
 	}
+}
+
+func (s *Service) dispatchProjectRun(projectID string) {
+	if s.runDispatcher != nil {
+		s.runDispatcher(projectID)
+		return
+	}
+	go s.runProjectTasksInBackground(projectID)
 }
 
 func (s *Service) runProjectTasksInBackground(projectID string) {
