@@ -233,21 +233,21 @@ func TestGenericExecutorNormalizesCommonToolAliases(t *testing.T) {
 func TestNormalizeActionArgsForTaskAnchorsFilePathToTaskTarget(t *testing.T) {
 	task := domain.Task{
 		Title:       "Append Chapter 3",
-		Description: "Append the chapter to artifacts/m10_6_full_validation_v11/writing/tide-city.md.",
+		Description: "Append the chapter to artifacts/m10_6_full_validation_v11/writing/harbor-notes.md.",
 		AcceptanceCriteria: []string{
-			"artifacts/m10_6_full_validation_v11/writing/tide-city.md contains all three chapters",
+			"artifacts/m10_6_full_validation_v11/writing/harbor-notes.md contains all three chapters",
 		},
 	}
 	args := map[string]any{
-		"path":    "artifacts/m10_6_full_validation_v11/tide-city.md",
+		"path":    "artifacts/m10_6_full_validation_v11/harbor-notes.md",
 		"content": "chapter 3",
 		"append":  true,
 	}
 	got := normalizeActionArgsForTask(task, "file.write", args)
-	if got["path"] != "artifacts/m10_6_full_validation_v11/writing/tide-city.md" {
+	if got["path"] != "artifacts/m10_6_full_validation_v11/writing/harbor-notes.md" {
 		t.Fatalf("expected task target path, got %#v", got["path"])
 	}
-	if args["path"] != "artifacts/m10_6_full_validation_v11/tide-city.md" {
+	if args["path"] != "artifacts/m10_6_full_validation_v11/harbor-notes.md" {
 		t.Fatalf("expected original args to remain unchanged, got %#v", args["path"])
 	}
 }
@@ -665,7 +665,7 @@ func TestAutoFinishAcceptsGeneratedPlanningArtifact(t *testing.T) {
 		Action:  "tool_call",
 		Tool:    "artifact.write",
 		State:   "changed",
-		Summary: "wrote artifact docs/plans/tide-city-planning.md",
+		Summary: "wrote artifact docs/plans/harbor-notes-planning.md",
 	}})
 	if !ok {
 		t.Fatal("expected generated planning artifact to auto finish")

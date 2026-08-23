@@ -52,36 +52,43 @@ Use go test and keep module boundaries clean.
 	}
 }
 
-func TestDiscoverPulledStorySkills(t *testing.T) {
-	root := filepath.Join("..", "..", ".claude", "skills")
-	if _, err := os.Stat(root); err != nil {
-		t.Fatalf("story skills root missing: %v", err)
+func TestDiscoverSkillsFromTempRoot(t *testing.T) {
+	root := t.TempDir()
+	for _, id := range []string{"code-review", "release-notes"} {
+		dir := filepath.Join(root, id)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir skill %s: %v", id, err)
+		}
+		body := "# " + id + "\n\nUse this skill for " + id + " work.\n"
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatalf("write skill %s: %v", id, err)
+		}
 	}
 	registry, err := Discover(context.Background(), root)
 	if err != nil {
-		t.Fatalf("discover pulled skills: %v", err)
+		t.Fatalf("discover skills: %v", err)
 	}
 	cards, err := registry.Search(context.Background(), "", 10)
 	if err != nil {
-		t.Fatalf("search pulled skills: %v", err)
+		t.Fatalf("search skills: %v", err)
 	}
 	seen := map[string]bool{}
 	for _, card := range cards {
 		seen[card.ID] = true
-		if strings.Contains(card.Description, "# Chapter Writing") {
+		if strings.Contains(card.Description, "# code-review") {
 			t.Fatal("card should not contain full skill body")
 		}
 	}
-	for _, id := range []string{"chapter-writing", "plot-structure"} {
+	for _, id := range []string{"code-review", "release-notes"} {
 		if !seen[id] {
-			t.Fatalf("expected pulled skill %q in local index, got %#v", id, seen)
+			t.Fatalf("expected skill %q in local index, got %#v", id, seen)
 		}
 		pkg, err := registry.Load(context.Background(), id)
 		if err != nil {
-			t.Fatalf("load pulled skill %s: %v", id, err)
+			t.Fatalf("load skill %s: %v", id, err)
 		}
 		if strings.TrimSpace(pkg.Instructions) == "" {
-			t.Fatalf("expected pulled skill %s instructions", id)
+			t.Fatalf("expected skill %s instructions", id)
 		}
 	}
 }

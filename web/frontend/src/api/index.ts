@@ -4,7 +4,8 @@ import type {
   Project, Task, TaskAttempt, TaskEvent, ToolCall, Observation,
   TestResult, ReviewResult, Artifact, ChatMessage, SkillCard,
   PersonaCard, MemoryItem, ChannelInfo, AppConfig, DashboardStats,
-  ProviderStatus, ChainDecision, FileEntry, Session, SessionContext
+  ProviderStatus, ChainDecision, FileEntry, Session, SessionContext,
+  TokenUsageSnapshot
 } from './types'
 
 import {
@@ -61,6 +62,13 @@ export const api = {
     return withFallback(() => request<DashboardStats>('/stats'), mockDashboardStats)
   },
   async getProviders(): Promise<ProviderStatus[]> { return mockProviders },
+  async getTokenUsage(): Promise<TokenUsageSnapshot | null> {
+    try {
+      return await request<TokenUsageSnapshot>('/tokens')
+    } catch {
+      return null
+    }
+  },
   async getRecentProjects(): Promise<Project[]> {
     return withFallback(async () => {
       const all = await request<Project[]>('/projects')

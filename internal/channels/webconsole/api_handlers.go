@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"time"
@@ -528,10 +527,11 @@ func extractID(path, prefix string) string {
 	return strings.TrimSuffix(id, "/")
 }
 
-func extractFileExtension(name string) string {
-	ext := filepath.Ext(name)
-	if ext == "" {
-		return ""
+
+func (s *APIServer) handleTokens(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, http.StatusMethodNotAllowed, "GET only")
+		return
 	}
-	return ext[1:]
+	writeJSON(w, s.usage.Snapshot())
 }

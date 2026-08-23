@@ -49,7 +49,7 @@ func (p *LLMPlanner) PlanProject(ctx context.Context, req PlanRequest) ([]domain
 		return nil, errors.New("planner returned no tasks")
 	}
 	output.Tasks = pruneResearchAndReflectionForSimpleBrowser(req, output.Tasks)
-	output.Tasks = pruneResearchAndReflectionForCreativeWriting(req, output.Tasks)
+	output.Tasks = pruneResearchAndReflectionForContentGeneration(req, output.Tasks)
 	if maxTasks := maxTasksForRequest(req); len(output.Tasks) > maxTasks {
 		return nil, fmt.Errorf("planner returned %d tasks, above max %d for this request", len(output.Tasks), maxTasks)
 	}
@@ -316,7 +316,7 @@ func needsResearchAndReflection(req PlanRequest) bool {
 	if isSimpleBrowserReadRequest(req) {
 		return false
 	}
-	if isCreativeWritingRequest(req) {
+	if isContentGenerationRequest(req) {
 		return false
 	}
 	fields := []string{
@@ -339,7 +339,12 @@ func needsResearchAndReflection(req PlanRequest) bool {
 	return false
 }
 
-func isCreativeWritingRequest(req PlanRequest) bool {
+// isContentGenerationRequest reports whether the request is pure content
+// generation (writing, drafting, storytelling) that gains little from
+// research/reflection scaffolding. The structured intent profile is checked
+// first so new domains classified by the intent analyzer need no planner
+// changes; the raw-text keywords are a fallback for thin profiles.
+func isContentGenerationRequest(req PlanRequest) bool {
 	text := strings.ToLower(strings.Join([]string{
 		req.UserInput,
 		req.Project.Goal,
@@ -350,7 +355,9 @@ func isCreativeWritingRequest(req PlanRequest) bool {
 	if hasAnyText(text, "code", "debug", "browser", "http://", "https://", "网页", "浏览器", "调试", "研究", "调研") {
 		return false
 	}
-	return hasAnyText(text, "story", "fiction", "novel", "chapter", "creative writing", "故事", "小说", "章节", "长篇写作", "短篇", "科幻", "创作")
+	signal := strings.ToLower(strings.TrimSpace(req.IntentProfile.TaskType + " " + strings.Join(req.IntentProfile.Domains, " ")))
+	structured := hasAnyText(signal, "writ", "creative", "content", "draft", "story", "fiction", "novel", "写作", "创作", "撰写", "故事", "小说")
+	return structured || hasAnyText(text, "write", "draft", "creative writing", "story", "fiction", "novel", "chapter", "写作", "撰写", "创作", "起草", "故事", "小说", "章节", "短篇", "长篇")
 }
 
 func hasAnyText(text string, markers ...string) bool {
@@ -390,8 +397,8 @@ func isSimpleBrowserReadRequest(req PlanRequest) bool {
 	return true
 }
 
-func pruneResearchAndReflectionForCreativeWriting(req PlanRequest, planned []plannedTask) []plannedTask {
-	if !isCreativeWritingRequest(req) {
+func pruneResearchAndReflectionForContentGeneration(req PlanRequest, planned []plannedTask) []plannedTask {
+	if !isContentGenerationRequest(req) {
 		return planned
 	}
 	pruned := make([]plannedTask, 0, len(planned))

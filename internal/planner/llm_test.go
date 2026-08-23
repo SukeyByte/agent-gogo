@@ -205,7 +205,7 @@ func TestPruneResearchAndReflectionForCreativeWriting(t *testing.T) {
 		},
 		IntentProfile: intent.Profile{TaskType: "document"},
 	}
-	out := pruneResearchAndReflectionForCreativeWriting(req, []plannedTask{
+	out := pruneResearchAndReflectionForContentGeneration(req, []plannedTask{
 		{Title: "反思任务拆解与验收口径", Goal: "反思", Type: "general", Acceptance: []string{"反思完成"}},
 		{Title: "写作三章正文", Goal: "写故事", Type: "document", DependsOn: []string{"反思任务拆解与验收口径"}, Acceptance: []string{"正文完成"}},
 	})
@@ -293,7 +293,7 @@ func TestNormalizePlannedDependenciesKeepsFinalVerificationAfterWriting(t *testi
 			Goal:       "验证目标文件存在且包含三章完整内容，提取三章标题，并汇报最终结果。",
 			Type:       "general",
 			DependsOn:  []string{"撰写第三章"},
-			Acceptance: []string{"提取出每一章的标题", "文件包含三章完整内容（标题 + 正文）", "确认文件 artifacts/m10_6_full_validation_v4/writing/tide-city.md 存在", "输出汇报信息，包含三章标题和文件路径"},
+			Acceptance: []string{"提取出每一章的标题", "文件包含三章完整内容（标题 + 正文）", "确认文件 artifacts/m10_6_full_validation_v4/writing/harbor-notes.md 存在", "输出汇报信息，包含三章标题和文件路径"},
 		},
 		{
 			Title:      "反思任务拆解与验收口径",
@@ -325,7 +325,7 @@ func TestLLMPlannerNormalizesCyclicWritingPlan(t *testing.T) {
 				{"phase":"创作","title":"撰写第一章","goal":"完成第一章的正文写作，约500字，并写入目标文件。","description":"","type":"document","depends_on":["制定故事大纲与创作计划"],"acceptance":["内容原创，符合科幻风格","文件已包含第一章内容（标题 + 正文）","第一章正文存在且字数在450-550字之间"],"required_capabilities":["create_artifact","read","write"]},
 				{"phase":"创作","title":"撰写第二章","goal":"完成第二章的正文写作，约500字，并追加到目标文件。","description":"","type":"document","depends_on":["撰写第一章"],"acceptance":["内容与第一章衔接，情节连贯","文件已包含第二章内容（标题 + 正文）","第二章正文存在且字数在450-550字之间"],"required_capabilities":["create_artifact","read","write"]},
 				{"phase":"创作","title":"撰写第三章","goal":"完成第三章的正文写作，约500字，并追加到目标文件。","description":"","type":"document","depends_on":["撰写第二章"],"acceptance":["内容与前两章连贯，有适当收尾或悬念","文件已包含第三章内容（标题 + 正文）","第三章正文存在且字数在450-550字之间"],"required_capabilities":["create_artifact","read","write"]},
-				{"phase":"创作","title":"检查文件并汇报三章标题和文件路径","goal":"验证目标文件存在且包含三章完整内容，提取三章标题，并汇报最终结果。","description":"","type":"general","depends_on":["撰写第三章"],"acceptance":["提取出每一章的标题","文件包含三章完整内容（标题 + 正文）","确认文件 artifacts/m10_6_full_validation_v4/writing/tide-city.md 存在","输出汇报信息，包含三章标题和文件路径"],"required_capabilities":["inspect","read","verify"]},
+				{"phase":"创作","title":"检查文件并汇报三章标题和文件路径","goal":"验证目标文件存在且包含三章完整内容，提取三章标题，并汇报最终结果。","description":"","type":"general","depends_on":["撰写第三章"],"acceptance":["提取出每一章的标题","文件包含三章完整内容（标题 + 正文）","确认文件 artifacts/m10_6_full_validation_v4/writing/harbor-notes.md 存在","输出汇报信息，包含三章标题和文件路径"],"required_capabilities":["inspect","read","verify"]},
 				{"phase":"创作","title":"反思任务拆解与验收口径","goal":"基于研究结果反思任务拆解是否站得住脚，明确最小可执行任务、风险和机械验收标准。","description":"","type":"general","depends_on":["检查文件并汇报三章标题和文件路径"],"acceptance":["已明确后续实现任务的机械验收标准","已识别关键风险、缺失信息和需要重规划的条件","已说明当前任务拆解为什么足以达成用户目标"],"required_capabilities":["verify"]}
 			]
 		}`}, nil

@@ -286,3 +286,16 @@ export interface SessionContext {
   memory_snapshot: string
   updated_at: string
 }
+
+export interface TokenUsageCounts {
+  calls: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+}
+
+export interface TokenUsageSnapshot {
+  totals: TokenUsageCounts
+  by_model: Record<string, TokenUsageCounts>
+  by_stage: Record<string, TokenUsageCounts>
+}

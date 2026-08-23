@@ -80,8 +80,3 @@ func TestInitWebRuntimeRegistersBrowserCapability(t *testing.T) {
 	}
 }
 
-func TestExtractPersonalSiteName(t *testing.T) {
-	if got := extractPersonalSiteName("为张三写一个个人网页并完成部署"); got != "张三" {
-		t.Fatalf("expected 张三, got %q", got)
-	}
-}

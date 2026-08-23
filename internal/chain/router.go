@@ -110,13 +110,6 @@ func normalizeDecision(decision Decision) Decision {
 	return decision
 }
 
-func decodeDecisionJSONObject(text string) (Decision, error) {
-	var wire routeDecisionWire
-	if err := decodeJSONObject(text, &wire); err != nil {
-		return Decision{}, err
-	}
-	return normalizeDecision(decisionFromWire(wire)), nil
-}
 
 type routeDecisionWire struct {
 	Level          Level  `json:"level"`

@@ -18,6 +18,7 @@ import (
 	"github.com/SukeyByte/agent-gogo/internal/memory"
 	"github.com/SukeyByte/agent-gogo/internal/observability"
 	"github.com/SukeyByte/agent-gogo/internal/persona"
+	"github.com/SukeyByte/agent-gogo/internal/provider"
 	"github.com/SukeyByte/agent-gogo/internal/planner"
 	"github.com/SukeyByte/agent-gogo/internal/reviewer"
 	appruntime "github.com/SukeyByte/agent-gogo/internal/runtime"
@@ -50,7 +51,8 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 	if err != nil {
 		return err
 	}
-	loggedLLM := observability.NewLoggingLLMProvider(llm, logger)
+	usageTracker := provider.NewUsageTracker()
+	loggedLLM := observability.NewLoggingLLMProvider(provider.WrapWithUsageTracker(llm, usageTracker), logger)
 	sqlite, err := openStore(ctx, cfg)
 	if err != nil {
 		return err
@@ -58,6 +60,12 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 	defer sqlite.Close()
 
 	commRuntime := newCommunicationRuntime(cfg, writer)
+	// Token usage summary is emitted on every exit path, including failures.
+	// The snapshot must be taken inside the closure: defer evaluates
+	// arguments at registration time.
+	defer func() {
+		logChannel(ctx, commRuntime, cfg, "output", usageTracker.Snapshot().Summary())
+	}()
 	toolRuntime := tools.NewBuiltinRuntime(sqlite, cfg.Storage.WorkspacePath)
 	toolRuntime.UseLogger(logger)
 	toolRuntime.UseSecurityPolicy(tools.SecurityPolicy{
@@ -182,24 +190,6 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 		"log_file":        logger.Path(),
 		"completed_tasks": ranTasks,
 	})
-}
-
-func RunStory(ctx context.Context, goal string, opts Options, writer io.Writer) error {
-	return RunGeneric(ctx, goal, opts, writer)
-}
-
-func RunPersonalSite(ctx context.Context, name string, opts Options, writer io.Writer) error {
-	name = firstNonEmpty(name, "苏柯宇")
-	return RunGeneric(ctx, "为"+name+"写一个个人网页并完成部署", opts, writer)
-}
-
-func RunPlan(ctx context.Context, goal string, opts Options, writer io.Writer) error {
-	return RunGeneric(ctx, goal, opts, writer)
-}
-
-func RunWebAnswer(ctx context.Context, url string, goal string, opts Options, writer io.Writer) error {
-	fullGoal := fmt.Sprintf("打开 %s，获取今日梅花易数的答案，并把答案结果发送到 channel 日志。用户目标：%s", url, goal)
-	return RunGeneric(ctx, fullGoal, opts, writer)
 }
 
 func renderTasks(tasks []domain.Task) string {

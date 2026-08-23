@@ -74,11 +74,15 @@ func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Wri
 	var sender webconsole.ChannelEventSender
 	var bridge *runtimeServiceBridge
 	llm, llmErr := newLLMProvider(cfg)
+	usageTracker := provider.NewUsageTracker()
 	var swappable *provider.SwappableLLMProvider
 	if llmErr == nil {
 		swappable = provider.NewSwappableLLMProvider(llm)
 		swappable.SetModel(cfg.LLM.Model)
-		bridge, err = initWebRuntime(ctx, cfg, sqlite, swappable, hub, channelID, sessionID, assets)
+		// Counting wraps the swappable provider so usage tracking survives
+		// hot-swaps: Swap replaces the inner provider, the wrapper stays.
+		counted := provider.WrapWithUsageTracker(swappable, usageTracker)
+		bridge, err = initWebRuntime(ctx, cfg, sqlite, counted, hub, channelID, sessionID, assets)
 		if err != nil {
 			_, _ = fmt.Fprintf(writer, "Warning: runtime init failed (%v), running in read-only mode\n", err)
 			sender = nil
@@ -117,6 +121,7 @@ func RunWebConsole(ctx context.Context, opts Options, addr string, writer io.Wri
 		LLMAPIKey:              cfg.LLM.APIKey,
 	}, channelID, sessionID, distDir)
 	apiServer.UseSessionStore(sqlite)
+	apiServer.UseUsageTracker(usageTracker)
 	apiServer.UseEmbeddedDist(frontend.DistFS())
 	apiServer.UseAssets(assets.skills, assets.personas, assets.memories)
 	apiServer.UseConfigPath(opts.ConfigPath)
@@ -224,6 +229,7 @@ func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQL
 		toolRuntime:   toolRuntime,
 		policy:        policy,
 		confirmations: confirmationGate,
+		llm:           loggedLLM,
 		browserCloser: browserEngine.Close,
 	}, nil
 }
@@ -236,6 +242,7 @@ type runtimeServiceBridge struct {
 	confirmations *webToolConfirmationGate
 	browserCloser func() error
 	swappable     *provider.SwappableLLMProvider
+	llm           provider.LLMProvider
 	cfgPath       string
 }
 
@@ -456,7 +463,11 @@ func (b *runtimeServiceBridge) updateRuntimeConfig(ctx context.Context, payload 
 			b.swappable.Swap(newLLM)
 			if llmModel != "" {
 				b.swappable.SetModel(llmModel)
-				b.service.UseLLM(b.swappable, llmModel)
+				if b.llm != nil {
+					b.service.UseLLM(b.llm, llmModel)
+				} else {
+					b.service.UseLLM(b.swappable, llmModel)
+				}
 			}
 		}
 	}

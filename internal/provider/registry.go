@@ -55,15 +55,6 @@ func NewRegisteredLLMProvider(name string, config OpenAICompatibleConfig) (LLMPr
 	return factory(config)
 }
 
-func RegisteredLLMProviders() []string {
-	llmRegistryMu.RLock()
-	defer llmRegistryMu.RUnlock()
-	names := make([]string, 0, len(llmRegistry))
-	for name := range llmRegistry {
-		names = append(names, name)
-	}
-	return names
-}
 
 func normalizeProviderName(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))

@@ -3,20 +3,28 @@ import { ref, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api } from '../api'
 import StatusBadge from '../components/common/StatusBadge.vue'
-import type { DashboardStats, ProviderStatus, Project } from '../api/types'
+import type { DashboardStats, ProviderStatus, Project, TokenUsageSnapshot } from '../api/types'
 
 const stats = ref<DashboardStats>({ project_count: 0, task_count: 0, done_count: 0, running_count: 0, failed_count: 0 })
 const providers = ref<ProviderStatus[]>([])
 const recentProjects = ref<Project[]>([])
+const tokenUsage = ref<TokenUsageSnapshot | null>(null)
 const loading = ref(true)
 
 onMounted(async () => {
-  const [s, p, rp] = await Promise.all([api.getDashboardStats(), api.getProviders(), api.getRecentProjects()])
+  const [s, p, rp, tu] = await Promise.all([api.getDashboardStats(), api.getProviders(), api.getRecentProjects(), api.getTokenUsage()])
   stats.value = s
   providers.value = p
   recentProjects.value = rp
+  tokenUsage.value = tu
   loading.value = false
 })
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k'
+  return String(n)
+}
 </script>
 
 <template>
@@ -43,6 +51,37 @@ onMounted(async () => {
       <div class="rounded-lg border border-gray-800 bg-gray-900 p-4">
         <div class="text-xs text-gray-500">Failed</div>
         <div class="mt-1 text-2xl font-bold text-red-400">{{ stats.failed_count }}</div>
+      </div>
+    </div>
+
+    <!-- Token Usage -->
+    <div v-if="tokenUsage" class="rounded-lg border border-gray-800 bg-gray-900 p-4">
+      <div class="mb-3 flex items-center justify-between">
+        <h3 class="text-sm font-medium text-gray-300">Token Usage</h3>
+        <span class="text-xs text-gray-500">{{ tokenUsage.totals.calls }} calls</span>
+      </div>
+      <div class="grid grid-cols-3 gap-4">
+        <div>
+          <div class="text-xs text-gray-500">Input</div>
+          <div class="mt-1 text-xl font-bold text-gray-100">{{ formatTokens(tokenUsage.totals.input_tokens) }}</div>
+        </div>
+        <div>
+          <div class="text-xs text-gray-500">Output</div>
+          <div class="mt-1 text-xl font-bold text-gray-100">{{ formatTokens(tokenUsage.totals.output_tokens) }}</div>
+        </div>
+        <div>
+          <div class="text-xs text-gray-500">Total</div>
+          <div class="mt-1 text-xl font-bold text-indigo-400">{{ formatTokens(tokenUsage.totals.total_tokens) }}</div>
+        </div>
+      </div>
+      <div v-if="Object.keys(tokenUsage.by_stage).length" class="mt-3 flex flex-wrap gap-2">
+        <span
+          v-for="(counts, stage) in tokenUsage.by_stage"
+          :key="stage"
+          class="rounded-full bg-gray-800 px-2.5 py-1 text-xs text-gray-400"
+        >
+          {{ stage }} · {{ formatTokens(counts.total_tokens) }}
+        </span>
       </div>
     </div>
 

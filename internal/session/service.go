@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -42,11 +41,6 @@ type Config struct {
 	MaxIdle time.Duration
 }
 
-func DefaultConfig() Config {
-	return Config{
-		MaxIdle: 24 * time.Hour,
-	}
-}
 
 type Service struct {
 	store  SessionStore
@@ -296,7 +290,3 @@ func extractTitle(goal string) string {
 	return goal
 }
 
-func sessionToJSON(session domain.Session) string {
-	data, _ := json.Marshal(session)
-	return string(data)
-}
