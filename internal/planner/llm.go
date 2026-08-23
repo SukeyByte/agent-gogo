@@ -25,6 +25,10 @@ func NewLLMPlanner(llm provider.LLMProvider, model string) *LLMPlanner {
 }
 
 func (p *LLMPlanner) PlanProject(ctx context.Context, req PlanRequest) ([]domain.Task, error) {
+	return p.planWithInstructions(ctx, req, "")
+}
+
+func (p *LLMPlanner) planWithInstructions(ctx context.Context, req PlanRequest, extraInstructions string) ([]domain.Task, error) {
 	if p.llm == nil {
 		return nil, errors.New("llm provider is required")
 	}
@@ -36,7 +40,7 @@ func (p *LLMPlanner) PlanProject(ctx context.Context, req PlanRequest) ([]domain
 	if err := llmjson.ChatObject(ctx, llmjson.Request{
 		LLM:        p.llm,
 		Model:      p.model,
-		System:     plannerSystemPrompt,
+		System:     plannerSystemPrompt + extraInstructions,
 		User:       string(payload),
 		SchemaName: "project_plan",
 		Schema:     plannerOutputSchema(),
@@ -690,3 +694,37 @@ func plannerOutputSchema() map[string]any {
 func arraySchema(itemType string) map[string]any {
 	return map[string]any{"type": "array", "items": map[string]any{"type": itemType}}
 }
+
+// PlanDelta re-plans with feedback: the regular planning prompt gains the
+// completed-work summary and gap list, plus an instruction to propose only
+// the missing work.
+func (p *LLMPlanner) PlanDelta(ctx context.Context, req PlanRequest) ([]domain.Task, error) {
+	if req.Feedback == nil || len(req.Feedback.Gaps) == 0 {
+		return nil, errors.New("delta plan requires feedback gaps")
+	}
+	deltaReq := req
+	deltaReq.Feedback = req.Feedback
+	return p.planWithInstructions(ctx, deltaReq, deltaPlannerInstructions(req.Feedback))
+}
+
+func deltaPlannerInstructions(feedback *PlanFeedback) string {
+	var builder strings.Builder
+	builder.WriteString("\n\nDELTA RE-PLAN MODE. Some work is already finished; the plan itself needs adjusting.\n")
+	builder.WriteString("Already completed (do NOT re-plan these):\n")
+	for _, item := range feedback.CompletedTasks {
+		builder.WriteString("- " + item + "\n")
+	}
+	builder.WriteString("Gaps to close (plan ONLY tasks that close these):\n")
+	for _, gap := range feedback.Gaps {
+		builder.WriteString("- " + gap + "\n")
+	}
+	return builder.String()
+}
+
+// NewLLMPlannerWrapper returns an LLMPlanner as a DeltaPlanner (PlanProject
+// plus feedback-driven PlanDelta).
+func NewLLMPlannerWrapper(llm provider.LLMProvider, model string) DeltaPlanner {
+	return NewLLMPlanner(llm, model)
+}
+
+var _ DeltaPlanner = (*LLMPlanner)(nil)

@@ -15,6 +15,9 @@ type PlanRequest struct {
 	ChainDecision chain.Decision
 	IntentProfile intent.Profile
 	ContextText   string
+	// Feedback, when set, switches the planner into delta mode: only tasks
+	// closing the listed gaps should be proposed.
+	Feedback *PlanFeedback
 }
 
 type Planner interface {

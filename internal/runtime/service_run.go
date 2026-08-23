@@ -177,19 +177,14 @@ func (s *Service) RunProjectTasks(ctx context.Context, projectID string, maxTask
 		iterations++
 		result, err := s.RunNextTask(ctx, projectID)
 		if errors.Is(err, sql.ErrNoRows) {
-			if blocked, blockErr := s.blockTasksWaitingOnBlockedDependencies(ctx, projectID); blockErr != nil {
-				return ranTasks, blockErr
-			} else if blocked > 0 {
+			finished, resumed, finErr := s.finalizeProjectRun(ctx, projectID, ranTasks)
+			ranTasks = finished
+			if finErr != nil {
+				return ranTasks, finErr
+			}
+			if resumed {
+				// Final review rejected and queued delta tasks; keep running.
 				continue
-			}
-			if summary, incomplete, summaryErr := s.projectIncompleteSummary(ctx, projectID); summaryErr != nil {
-				return ranTasks, summaryErr
-			} else if incomplete {
-				s.emitProjectBlocked(ctx, projectID, fmt.Sprintf("Project run paused after %d task(s): %s", ranTasks, summary))
-				return ranTasks, nil
-			}
-			if _, err := s.store.UpdateProjectStatus(ctx, projectID, domain.ProjectStatusCompleted); err != nil {
-				return ranTasks, err
 			}
 			if err := s.emit(ctx, comm.NewDoneIntent(s.communicationChannel, fmt.Sprintf("Project run finished: %d task(s) completed", ranTasks)), projectID); err != nil {
 				return ranTasks, err
@@ -487,6 +482,7 @@ func (s *Service) runProjectTasksParallel(ctx context.Context, projectID string,
 		sem        = make(chan struct{}, workers)
 		iterations = 0
 	)
+claimLoop:
 	for iterations < maxTasks*2 {
 		if ranMu.Lock(); ran >= maxTasks {
 			ranMu.Unlock()
@@ -508,7 +504,15 @@ func (s *Service) runProjectTasksParallel(ctx context.Context, projectID string,
 				return ran, err
 			}
 			if len(claimed) == 0 {
-				return s.finalizeProjectRun(ctx, projectID, ran)
+				finished, resumed, finErr := s.finalizeProjectRun(ctx, projectID, ran)
+				if finErr != nil {
+					return finished, finErr
+				}
+				if resumed {
+					// Delta tasks queued by the final review: loop claims them.
+					continue
+				}
+				return finished, nil
 			}
 		}
 		for _, task := range claimed {
@@ -534,30 +538,14 @@ func (s *Service) runProjectTasksParallel(ctx context.Context, projectID string,
 	if ran >= maxTasks {
 		return ran, fmt.Errorf("max task limit reached: %d", maxTasks)
 	}
-	return s.finalizeProjectRun(ctx, projectID, ran)
-}
-
-// finalizeProjectRun applies the shared end-of-run logic: block dependents of
-// blocked tasks, pause on incomplete work, or mark the project completed.
-func (s *Service) finalizeProjectRun(ctx context.Context, projectID string, ranTasks int) (int, error) {
-	if blocked, blockErr := s.blockTasksWaitingOnBlockedDependencies(ctx, projectID); blockErr != nil {
-		return ranTasks, blockErr
-	} else if blocked > 0 {
-		return ranTasks, nil
+	finished, resumed, finErr := s.finalizeProjectRun(ctx, projectID, ran)
+	if finErr != nil {
+		return finished, finErr
 	}
-	summary, incomplete, summaryErr := s.projectIncompleteSummary(ctx, projectID)
-	if summaryErr != nil {
-		return ranTasks, summaryErr
+	if resumed {
+		// Delta tasks queued by the final review: reset counters, claim them.
+		iterations = 0
+		goto claimLoop
 	}
-	if incomplete {
-		s.emitProjectBlocked(ctx, projectID, fmt.Sprintf("Project run paused after %d task(s): %s", ranTasks, summary))
-		return ranTasks, nil
-	}
-	if _, err := s.store.UpdateProjectStatus(ctx, projectID, domain.ProjectStatusCompleted); err != nil {
-		return ranTasks, err
-	}
-	if err := s.emit(ctx, comm.NewDoneIntent(s.communicationChannel, fmt.Sprintf("Project run finished: %d task(s) completed", ranTasks)), projectID); err != nil {
-		return ranTasks, err
-	}
-	return ranTasks, nil
+	return finished, nil
 }

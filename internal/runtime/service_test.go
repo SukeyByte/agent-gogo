@@ -469,8 +469,15 @@ func TestCreateRepairTaskStopsAtRepairDepthLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
-	if len(tasks) != 1 {
-		t.Fatalf("expected no new repair task beyond limit, got %d tasks", len(tasks))
+	// The repair chain stops (no new "Fix:" task) but the failure history
+	// triggers a delta re-plan instead of abandoning the project.
+	if len(tasks) != 2 {
+		t.Fatalf("expected original + 1 delta replan task, got %d tasks", len(tasks))
+	}
+	for _, t2 := range tasks {
+		if t2.ID != task.ID && !strings.HasPrefix(t2.Title, "Delta") {
+			t.Fatalf("expected delta replan task, got %q", t2.Title)
+		}
 	}
 	events, err := sqlite.ListTaskEvents(ctx, task.ID)
 	if err != nil {

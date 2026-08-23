@@ -244,6 +244,8 @@ func initWebRuntime(ctx context.Context, cfg appconfig.Config, sqlite *store.SQL
 	service.UseContextAssets(function.NewCatalogRegistry(), assets.skills, assets.personas, assets.memories, contextbuilder.NewSerializer(contextbuilder.SerializerOptions{}), logger)
 	service.UseContextBudget(cfg.Runtime.ContextMaxChars)
 	service.UseParallelism(cfg.Runtime.MaxParallelTasks)
+	service.UseProjectReviewer(reviewer.NewLLMProjectReviewer(loggedLLM, cfg.LLM.Model))
+	service.UseDeltaPlanner(planner.NewLLMPlannerWrapper(loggedLLM, cfg.LLM.Model))
 	service.UseMemoryPersistence(assets.path)
 	discoveryRuntime := tools.NewBuiltinRuntime(nil, cfg.Storage.WorkspacePath)
 	discoveryRuntime.RegisterBrowserTools(browserEngine)

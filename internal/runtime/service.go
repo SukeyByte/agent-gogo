@@ -89,6 +89,9 @@ type Service struct {
 	parallelism          int
 	taskSink             func(TaskRunResult, error)
 	runDispatcher        func(projectID string)
+	projectReviewer      ProjectReviewer
+	deltaPlanner         planner.DeltaPlanner
+	replansByProject     map[string]int
 	contextMaxChars      int
 	discovery            discovery.Loop
 }
@@ -118,10 +121,25 @@ type UserConfirmation struct {
 	Message        string
 }
 
+// ProjectReviewer judges whether the assembled delivery achieves the
+// project goal; the concrete contract lives in the reviewer package.
+type ProjectReviewer = reviewer.ProjectReviewerIface
+
+// UseProjectReviewer enables the project-level final review. Without it,
+// finishing all tasks marks the project completed directly (old behavior).
+func (s *Service) UseProjectReviewer(r ProjectReviewer) {
+	s.projectReviewer = r
+}
+
+// UseDeltaPlanner sets the planner used for feedback-driven delta re-plans.
+// Defaults to a FixedDeltaPlanner when only an LLM planner is configured.
+func (s *Service) UseDeltaPlanner(p planner.DeltaPlanner) {
+	s.deltaPlanner = p
+}
+
 // TaskFailedError marks the failure of a single task. A repair task may have
 // been queued, so run loops can continue with remaining or recovery tasks
 // instead of aborting the whole project run.
-
 // TaskFailedError marks the failure of a single task. A repair task may have
 // been queued, so run loops can continue with remaining or recovery tasks
 // instead of aborting the whole project run.

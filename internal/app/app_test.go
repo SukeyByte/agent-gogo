@@ -79,4 +79,3 @@ func TestInitWebRuntimeRegistersBrowserCapability(t *testing.T) {
 		t.Fatalf("expected browser capability available, missing=%v blocked=%v", availability.MissingCapabilities, availability.BlockedCapabilities)
 	}
 }
-

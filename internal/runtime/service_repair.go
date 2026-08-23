@@ -66,6 +66,20 @@ func (s *Service) createRepairTask(ctx context.Context, projectID string, failed
 		}); err != nil {
 			return domain.Task{}, err
 		}
+		// Repeated rejection means the plan is likely wrong, not the
+		// execution: hand the failure history to the planner as a delta
+		// re-plan instead of abandoning the project.
+		gaps := []string{fmt.Sprintf("Task %q failed after %d repair attempts: %s", failedTask.Title, depth, message)}
+		if len(failedTask.AcceptanceCriteria) > 0 {
+			gaps[0] += " (acceptance: " + strings.Join(failedTask.AcceptanceCriteria, "; ") + ")"
+		}
+		if created, planErr := s.deltaReplan(ctx, projectID, gaps, "repair_limit_reached", nil); planErr == nil && len(created) > 0 {
+			return domain.Task{}, limitErr
+		} else if planErr != nil {
+			_ = s.log(ctx, "project.replan.error", map[string]any{
+				"project_id": projectID, "reason": "repair_limit_reached", "error": planErr.Error(),
+			})
+		}
 		return domain.Task{}, limitErr
 	}
 	repair, err := s.store.CreateTask(ctx, domain.Task{

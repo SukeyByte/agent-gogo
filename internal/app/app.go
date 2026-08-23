@@ -131,6 +131,8 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 	service.UseContextAssets(function.NewCatalogRegistry(), skillRegistry, personaRegistry, memoryIndex, contextbuilder.NewSerializer(contextbuilder.SerializerOptions{}), logger)
 	service.UseContextBudget(cfg.Runtime.ContextMaxChars)
 	service.UseParallelism(cfg.Runtime.MaxParallelTasks)
+	service.UseProjectReviewer(reviewer.NewLLMProjectReviewer(loggedLLM, cfg.LLM.Model))
+	service.UseDeltaPlanner(planner.NewLLMPlannerWrapper(loggedLLM, cfg.LLM.Model))
 	service.UseMemoryPersistence(memoryPath)
 	service.UseSession(sessionSvc, sess.ID)
 	service.UseDiscoveryLoop(discovery.NewToolLoop(tools.NewBuiltinRuntime(nil, cfg.Storage.WorkspacePath)).UseMemory(memoryIndex))

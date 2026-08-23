@@ -21,9 +21,9 @@ type TaskQueue struct {
 	runner  func(ctx context.Context, projectID string)
 	started bool
 
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 
 	running   atomic.Int64
 	processed atomic.Int64
