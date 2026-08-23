@@ -117,6 +117,24 @@ type UserConfirmation struct {
 	Message        string
 }
 
+// TaskFailedError marks the failure of a single task. A repair task may have
+// been queued, so run loops can continue with remaining or recovery tasks
+// instead of aborting the whole project run.
+type TaskFailedError struct {
+	Stage     string
+	TaskTitle string
+	Err       error
+}
+
+func (e *TaskFailedError) Error() string {
+	if e.TaskTitle == "" {
+		return "task failed at " + e.Stage + ": " + e.Err.Error()
+	}
+	return "task " + e.TaskTitle + " failed at " + e.Stage + ": " + e.Err.Error()
+}
+
+func (e *TaskFailedError) Unwrap() error { return e.Err }
+
 type TaskRunResult struct {
 	ProjectID    string
 	Task         domain.Task
@@ -589,7 +607,7 @@ func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunRes
 			}
 		}
 		s.emitTaskBlocked(ctx, projectID, task, "Task failed during execution: "+err.Error())
-		return TaskRunResult{}, err
+		return TaskRunResult{}, &TaskFailedError{Stage: "executor", TaskTitle: task.Title, Err: err}
 	}
 	if err := s.log(ctx, "executor.result", executed); err != nil {
 		return TaskRunResult{}, err
@@ -606,7 +624,7 @@ func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunRes
 			err = errors.Join(err, repairErr)
 		}
 		s.emitTaskBlocked(ctx, projectID, executed.Task, "Task failed during testing: "+err.Error())
-		return TaskRunResult{}, err
+		return TaskRunResult{}, &TaskFailedError{Stage: "tester", TaskTitle: executed.Task.Title, Err: err}
 	}
 	if err := s.log(ctx, "tester.result", tested); err != nil {
 		return TaskRunResult{}, err
@@ -620,7 +638,7 @@ func (s *Service) RunNextTask(ctx context.Context, projectID string) (TaskRunRes
 			err = errors.Join(err, repairErr)
 		}
 		s.emitTaskBlocked(ctx, projectID, tested.Task, "Task failed during review: "+err.Error())
-		return TaskRunResult{}, err
+		return TaskRunResult{}, &TaskFailedError{Stage: "reviewer", TaskTitle: tested.Task.Title, Err: err}
 	}
 	if err := s.log(ctx, "reviewer.result", reviewed); err != nil {
 		return TaskRunResult{}, err

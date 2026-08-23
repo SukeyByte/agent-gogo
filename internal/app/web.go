@@ -494,14 +494,21 @@ func (b *runtimeServiceBridge) resumeSession(ctx context.Context, sessionID stri
 }
 
 func (b *runtimeServiceBridge) runReadyTasks(ctx context.Context, projectID string) {
+	consecutiveFailures := 0
 	for i := 0; i < 50; i++ {
 		_, err := b.service.RunNextTask(ctx, projectID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return
 		}
 		if err != nil {
+			var taskErr *appruntime.TaskFailedError
+			if errors.As(err, &taskErr) && consecutiveFailures < 2 {
+				consecutiveFailures++
+				continue
+			}
 			return
 		}
+		consecutiveFailures = 0
 	}
 }
 

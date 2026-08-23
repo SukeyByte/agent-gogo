@@ -151,14 +151,25 @@ func RunGeneric(ctx context.Context, goal string, opts Options, writer io.Writer
 		limit = 50
 	}
 	ranTasks := 0
+	consecutiveFailures := 0
 	for ranTasks < limit {
 		result, err := service.RunNextTask(ctx, project.ID)
 		if errors.Is(err, sql.ErrNoRows) {
 			break
 		}
 		if err != nil {
+			var taskErr *appruntime.TaskFailedError
+			// A failed task queues a repair task; keep the run going instead
+			// of abandoning remaining and recovery tasks. The budget stops a
+			// runaway repair-of-repair loop.
+			if errors.As(err, &taskErr) && consecutiveFailures < 2 {
+				consecutiveFailures++
+				logChannel(ctx, commRuntime, cfg, "task", taskErr.Error()+" (repair queued, continuing)")
+				continue
+			}
 			return err
 		}
+		consecutiveFailures = 0
 		ranTasks++
 		logChannel(ctx, commRuntime, cfg, "task", fmt.Sprintf("%s -> %s", result.Task.Title, result.Task.Status))
 	}

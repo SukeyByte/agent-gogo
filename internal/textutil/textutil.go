@@ -19,10 +19,67 @@ func DecodeJSONObject(text string, target any) error {
 	if start >= 0 && end >= start {
 		text = text[start : end+1]
 	}
-	if err := json.Unmarshal([]byte(text), target); err != nil {
-		return json.Unmarshal([]byte(repairSpacedEscapes(text)), target)
+	if err := json.Unmarshal([]byte(text), target); err == nil {
+		return nil
 	}
-	return nil
+	if err := json.Unmarshal([]byte(repairSpacedEscapes(text)), target); err == nil {
+		return nil
+	}
+	return json.Unmarshal([]byte(completeTruncatedJSON(text)), target)
+}
+
+// completeTruncatedJSON closes dangling strings, arrays, and objects left open
+// by a truncated model response (e.g. output cut right before the final '}'),
+// so a nearly-complete object can still be decoded deterministically instead
+// of burning another LLM repair round-trip that often truncates the same way.
+func completeTruncatedJSON(text string) string {
+	var closers []byte
+	inString := false
+	escaped := false
+	for i := 0; i < len(text); i++ {
+		ch := text[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case ch == '\\':
+				escaped = true
+			case ch == '"':
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			closers = append(closers, '}')
+		case '[':
+			closers = append(closers, ']')
+		case '}', ']':
+			if len(closers) > 0 {
+				closers = closers[:len(closers)-1]
+			}
+		}
+	}
+	if len(closers) == 0 && !inString {
+		return text
+	}
+	if inString {
+		if escaped {
+			// The string ended on a dangling escape; dropping it lets the
+			// closing quote terminate the string instead of escaping it.
+			text = text[:len(text)-1]
+		}
+		text += `"`
+	}
+	completed := strings.TrimRight(text, " \t\r\n")
+	completed = strings.TrimSuffix(completed, ",")
+	var closing strings.Builder
+	for i := len(closers) - 1; i >= 0; i-- {
+		closing.WriteByte(closers[i])
+	}
+	return completed + closing.String()
 }
 
 func SortedUniqueStrings(values []string) []string {
