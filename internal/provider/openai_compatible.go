@@ -240,9 +240,12 @@ type chatCompletionResponse struct {
 		} `json:"message"`
 	} `json:"choices"`
 	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		TotalTokens         int `json:"total_tokens"`
+		PromptTokensDetails *struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -256,11 +259,15 @@ func (r chatCompletionResponse) text() string {
 }
 
 func (r chatCompletionResponse) usageMap() map[string]int {
-	return map[string]int{
+	usage := map[string]int{
 		"input_tokens":  r.Usage.PromptTokens,
 		"output_tokens": r.Usage.CompletionTokens,
 		"total_tokens":  r.Usage.TotalTokens,
 	}
+	if r.Usage.PromptTokensDetails != nil {
+		usage["cached_tokens"] = r.Usage.PromptTokensDetails.CachedTokens
+	}
+	return usage
 }
 
 func thinkingType(enabled bool) string {

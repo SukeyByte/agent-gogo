@@ -55,7 +55,6 @@ func NewRegisteredLLMProvider(name string, config OpenAICompatibleConfig) (LLMPr
 	return factory(config)
 }
 
-
 func normalizeProviderName(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }

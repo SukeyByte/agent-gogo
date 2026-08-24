@@ -14,6 +14,7 @@ type UsageCounts struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 	TotalTokens  int `json:"total_tokens"`
+	CachedTokens int `json:"cached_tokens"`
 }
 
 // UsageSnapshot is a point-in-time copy of everything the tracker recorded.
@@ -60,7 +61,7 @@ func (t *UsageTracker) Record(resp ChatResponse, metadata map[string]string) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	entry := UsageCounts{Calls: 1, InputTokens: in, OutputTokens: out, TotalTokens: total}
+	entry := UsageCounts{Calls: 1, InputTokens: in, OutputTokens: out, TotalTokens: total, CachedTokens: resp.Usage["cached_tokens"]}
 	t.totals = addCounts(t.totals, entry)
 	t.byModel[model] = addCounts(t.byModel[model], entry)
 	t.byStage[stage] = addCounts(t.byStage[stage], entry)
@@ -104,10 +105,15 @@ func (s UsageSnapshot) Summary() string {
 	if breakdown != "" {
 		breakdown = " [" + breakdown + "]"
 	}
+	cached := ""
+	if s.Totals.CachedTokens > 0 {
+		cached = " cached=" + strconv.Itoa(s.Totals.CachedTokens) +
+			" (" + strconv.Itoa(s.Totals.CachedTokens*100/maxInt(1, s.Totals.InputTokens)) + "% of input)"
+	}
 	return "token usage: input=" + strconv.Itoa(s.Totals.InputTokens) +
 		" output=" + strconv.Itoa(s.Totals.OutputTokens) +
 		" total=" + strconv.Itoa(s.Totals.TotalTokens) +
-		" calls=" + strconv.Itoa(s.Totals.Calls) + breakdown
+		" calls=" + strconv.Itoa(s.Totals.Calls) + cached + breakdown
 }
 
 func addCounts(a, b UsageCounts) UsageCounts {
@@ -116,6 +122,7 @@ func addCounts(a, b UsageCounts) UsageCounts {
 		InputTokens:  a.InputTokens + b.InputTokens,
 		OutputTokens: a.OutputTokens + b.OutputTokens,
 		TotalTokens:  a.TotalTokens + b.TotalTokens,
+		CachedTokens: a.CachedTokens + b.CachedTokens,
 	}
 }
 
@@ -137,4 +144,11 @@ func (p *CountingLLMProvider) Chat(ctx context.Context, req ChatRequest) (ChatRe
 		p.tracker.Record(resp, req.Metadata)
 	}
 	return resp, err
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
